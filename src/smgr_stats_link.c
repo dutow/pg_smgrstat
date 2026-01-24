@@ -21,6 +21,14 @@ static inline void smgr_stats_update_activity(SmgrStatsEntry* entry, TimestampTz
   }
 }
 
+static inline void smgr_stats_record_burstiness(SmgrStatsBurstiness* burst, TimestampTz now) {
+  if (burst->last_op_time != 0) {
+    double iat_us = (double)(now - burst->last_op_time);
+    smgr_stats_welford_record(&burst->iat, iat_us);
+  }
+  burst->last_op_time = now;
+}
+
 static PgAioHandleCallbackID smgr_stats_aio_cb_id = PGAIO_HCB_INVALID;
 static instr_time* aio_start_times = NULL;
 
@@ -49,7 +57,9 @@ static PgAioResult smgr_stats_readv_complete(PgAioHandle* ioh, PgAioResult prior
       smgr_stats_hist_record(&entry->read_timing, elapsed_us);
     }
 
-    smgr_stats_update_activity(entry, GetCurrentTimestamp());
+    TimestampTz now = GetCurrentTimestamp();
+    smgr_stats_record_burstiness(&entry->read_burst, now);
+    smgr_stats_update_activity(entry, now);
     smgr_stats_release_entry(entry);
   }
 
@@ -79,7 +89,9 @@ static void smgr_stats_readv(SMgrRelation reln, ForkNumber forknum, BlockNumber 
   entry->reads++;
   entry->read_blocks += nblocks;
   smgr_stats_hist_record(&entry->read_timing, elapsed_us);
-  smgr_stats_update_activity(entry, GetCurrentTimestamp());
+  TimestampTz now = GetCurrentTimestamp();
+  smgr_stats_record_burstiness(&entry->read_burst, now);
+  smgr_stats_update_activity(entry, now);
   smgr_stats_release_entry(entry);
 }
 
@@ -123,7 +135,9 @@ static void smgr_stats_writev(SMgrRelation reln, ForkNumber forknum, BlockNumber
   entry->writes++;
   entry->write_blocks += nblocks;
   smgr_stats_hist_record(&entry->write_timing, elapsed_us);
-  smgr_stats_update_activity(entry, GetCurrentTimestamp());
+  TimestampTz now = GetCurrentTimestamp();
+  smgr_stats_record_burstiness(&entry->write_burst, now);
+  smgr_stats_update_activity(entry, now);
   smgr_stats_release_entry(entry);
 }
 

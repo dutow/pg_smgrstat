@@ -8,6 +8,13 @@
 #include "utils/timestamp.h"
 
 #include "smgr_stats_hist.h"
+#include "smgr_stats_welford.h"
+
+/* Inter-arrival time burstiness: Welford on time between consecutive operations. */
+typedef struct SmgrStatsBurstiness {
+  SmgrStatsWelford iat;     /* Inter-arrival time statistics (microseconds) */
+  TimestampTz last_op_time; /* Previous operation timestamp (NOT reset between periods) */
+} SmgrStatsBurstiness;
 
 typedef struct SmgrStatsKey {
   RelFileLocator locator;
@@ -30,6 +37,10 @@ typedef struct SmgrStatsEntry {
   /* Timing histograms */
   SmgrStatsTimingHist read_timing;
   SmgrStatsTimingHist write_timing;
+
+  /* Burstiness: inter-arrival time statistics */
+  SmgrStatsBurstiness read_burst;
+  SmgrStatsBurstiness write_burst;
 
   /* Activity spread (for long collection intervals) */
   uint32 active_seconds;    /* Distinct seconds with any activity */

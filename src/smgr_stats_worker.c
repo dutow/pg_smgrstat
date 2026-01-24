@@ -66,6 +66,7 @@ static void smgr_stats_collect_and_insert(void) {
                        " extends, extend_blocks, truncates, fsyncs,"
                        " read_hist, read_count, read_total_us, read_min_us, read_max_us,"
                        " write_hist, write_count, write_total_us, write_min_us, write_max_us,"
+                       " read_iat_mean_us, read_iat_cov, write_iat_mean_us, write_iat_cov,"
                        " active_seconds, first_access, last_access) "
                        "VALUES (%ld, %u, %u, %u, %d,"
                        " %lu, %lu, %lu, %lu,"
@@ -103,6 +104,18 @@ static void smgr_stats_collect_and_insert(void) {
                          (unsigned long)e->write_timing.max_us);
       } else {
         appendStringInfoString(&query, "NULL, NULL, NULL, NULL, NULL, ");
+      }
+
+      if (e->read_burst.iat.count >= 2) {
+        appendStringInfo(&query, "%g, %g, ", e->read_burst.iat.mean, smgr_stats_welford_cov(&e->read_burst.iat));
+      } else {
+        appendStringInfoString(&query, "NULL, NULL, ");
+      }
+
+      if (e->write_burst.iat.count >= 2) {
+        appendStringInfo(&query, "%g, %g, ", e->write_burst.iat.mean, smgr_stats_welford_cov(&e->write_burst.iat));
+      } else {
+        appendStringInfoString(&query, "NULL, NULL, ");
       }
 
       appendStringInfo(&query, "%u, '%s', '%s')", e->active_seconds, timestamptz_to_str(e->first_access),

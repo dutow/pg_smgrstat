@@ -23,6 +23,10 @@ CREATE TABLE smgr_stats.history (
     write_total_us bigint,
     write_min_us bigint,
     write_max_us bigint,
+    read_iat_mean_us double precision,
+    read_iat_cov double precision,
+    write_iat_mean_us double precision,
+    write_iat_cov double precision,
     active_seconds integer NOT NULL DEFAULT 0,
     first_access timestamptz,
     last_access timestamptz
@@ -56,6 +60,10 @@ CREATE FUNCTION smgr_stats.current(
     OUT write_total_us bigint,
     OUT write_min_us bigint,
     OUT write_max_us bigint,
+    OUT read_iat_mean_us double precision,
+    OUT read_iat_cov double precision,
+    OUT write_iat_mean_us double precision,
+    OUT write_iat_cov double precision,
     OUT active_seconds integer,
     OUT first_access timestamptz,
     OUT last_access timestamptz

@@ -29,7 +29,7 @@ Datum smgr_stats_current(PG_FUNCTION_ARGS) {
     funcctx->user_fctx = ctx;
     funcctx->max_calls = count;
 
-    TupleDesc tupdesc = CreateTemplateTupleDesc(27);
+    TupleDesc tupdesc = CreateTemplateTupleDesc(31);
     TupleDescInitEntry(tupdesc, 1, "bucket_id", INT8OID, -1, 0);
     TupleDescInitEntry(tupdesc, 2, "collected_at", TIMESTAMPTZOID, -1, 0);
     TupleDescInitEntry(tupdesc, 3, "spcoid", OIDOID, -1, 0);
@@ -54,9 +54,13 @@ Datum smgr_stats_current(PG_FUNCTION_ARGS) {
     TupleDescInitEntry(tupdesc, 22, "write_total_us", INT8OID, -1, 0);
     TupleDescInitEntry(tupdesc, 23, "write_min_us", INT8OID, -1, 0);
     TupleDescInitEntry(tupdesc, 24, "write_max_us", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 25, "active_seconds", INT4OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 26, "first_access", TIMESTAMPTZOID, -1, 0);
-    TupleDescInitEntry(tupdesc, 27, "last_access", TIMESTAMPTZOID, -1, 0);
+    TupleDescInitEntry(tupdesc, 25, "read_iat_mean_us", FLOAT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 26, "read_iat_cov", FLOAT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 27, "write_iat_mean_us", FLOAT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 28, "write_iat_cov", FLOAT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 29, "active_seconds", INT4OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 30, "first_access", TIMESTAMPTZOID, -1, 0);
+    TupleDescInitEntry(tupdesc, 31, "last_access", TIMESTAMPTZOID, -1, 0);
     funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
     MemoryContextSwitchTo(oldctx);
@@ -67,8 +71,8 @@ Datum smgr_stats_current(PG_FUNCTION_ARGS) {
 
   if (funcctx->call_cntr < funcctx->max_calls) {
     SmgrStatsEntry* e = &ctx->entries[funcctx->call_cntr];
-    Datum values[27];
-    bool nulls[27] = {false};
+    Datum values[31];
+    bool nulls[31] = {false};
 
     values[0] = Int64GetDatum(ctx->bucket_id);
     values[1] = TimestampTzGetDatum(ctx->collected_at);
@@ -113,9 +117,25 @@ Datum smgr_stats_current(PG_FUNCTION_ARGS) {
       nulls[23] = true;
     }
 
-    values[24] = Int32GetDatum((int32)e->active_seconds);
-    values[25] = TimestampTzGetDatum(e->first_access);
-    values[26] = TimestampTzGetDatum(e->last_access);
+    if (e->read_burst.iat.count >= 2) {
+      values[24] = Float8GetDatum(e->read_burst.iat.mean);
+      values[25] = Float8GetDatum(smgr_stats_welford_cov(&e->read_burst.iat));
+    } else {
+      nulls[24] = true;
+      nulls[25] = true;
+    }
+
+    if (e->write_burst.iat.count >= 2) {
+      values[26] = Float8GetDatum(e->write_burst.iat.mean);
+      values[27] = Float8GetDatum(smgr_stats_welford_cov(&e->write_burst.iat));
+    } else {
+      nulls[26] = true;
+      nulls[27] = true;
+    }
+
+    values[28] = Int32GetDatum((int32)e->active_seconds);
+    values[29] = TimestampTzGetDatum(e->first_access);
+    values[30] = TimestampTzGetDatum(e->last_access);
 
     HeapTuple tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
     SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));

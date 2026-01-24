@@ -55,6 +55,9 @@ static void smgr_stats_entry_reset(SmgrStatsEntry* entry) {
   entry->fsyncs = 0;
   smgr_stats_hist_reset(&entry->read_timing);
   smgr_stats_hist_reset(&entry->write_timing);
+  smgr_stats_welford_reset(&entry->read_burst.iat);
+  smgr_stats_welford_reset(&entry->write_burst.iat);
+  /* last_op_time preserved for correct IAT across period boundaries */
   entry->active_seconds = 0;
   /* last_active_second preserved for correct dedup across period boundaries */
   entry->first_access = 0;
@@ -66,6 +69,8 @@ SmgrStatsEntry* smgr_stats_get_entry(const SmgrStatsKey* key, bool* found) {
   if (!*found) {
     smgr_stats_entry_reset(entry);
     entry->last_active_second = 0;
+    entry->read_burst.last_op_time = 0;
+    entry->write_burst.last_op_time = 0;
   }
   return entry;
 }
