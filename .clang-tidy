@@ -1,0 +1,34 @@
+Checks: 'clang-analyzer-*,
+         bugprone-*,
+         cert-*,
+         concurrency-*,
+         performance-*,
+         readability-*,
+         -bugprone-easily-swappable-parameters,
+         -bugprone-reserved-identifier,
+         -readability-identifier-length,
+         -readability-magic-numbers,
+         '
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'pg_smgrstat/.*\.h$'
+CheckOptions:
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.UnionCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.TypedefCase
+    value: CamelCase
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+  - key: readability-function-cognitive-complexity.IgnoreMacros
+    value: true

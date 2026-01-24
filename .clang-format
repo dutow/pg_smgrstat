@@ -1,0 +1,12 @@
+---
+BasedOnStyle: google
+ColumnLimit: 120
+IncludeBlocks: Preserve
+---
+Language: Cpp
+Standard: Latest
+BreakConstructorInitializersBeforeComma: true
+ConstructorInitializerAllOnOneLineOrOnePerLine: true
+Cpp11BracedListStyle: true
+ForEachMacros: []
+---
