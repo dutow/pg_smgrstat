@@ -11,6 +11,7 @@
 #include "tcop/utility.h"
 #include "utils/builtins.h"
 #include "utils/snapmgr.h"
+#include "utils/timestamp.h"
 
 #include "smgr_stats_guc.h"
 #include "smgr_stats_store.h"
@@ -60,13 +61,19 @@ static void smgr_stats_collect_and_insert(void) {
 
       appendStringInfo(&query,
                        "INSERT INTO smgr_stats.history "
-                       "(bucket_id, spcoid, dboid, relnumber, forknum, reads, read_blocks, writes, write_blocks,"
+                       "(bucket_id, spcoid, dboid, relnumber, forknum,"
+                       " reads, read_blocks, writes, write_blocks,"
+                       " extends, extend_blocks, truncates, fsyncs,"
                        " read_hist, read_count, read_total_us, read_min_us, read_max_us,"
-                       " write_hist, write_count, write_total_us, write_min_us, write_max_us) "
-                       "VALUES (%ld, %u, %u, %u, %d, %lu, %lu, %lu, %lu, ",
+                       " write_hist, write_count, write_total_us, write_min_us, write_max_us,"
+                       " active_seconds, first_access, last_access) "
+                       "VALUES (%ld, %u, %u, %u, %d,"
+                       " %lu, %lu, %lu, %lu,"
+                       " %lu, %lu, %lu, %lu, ",
                        (long)bucket_id, e->key.locator.spcOid, e->key.locator.dbOid, e->key.locator.relNumber,
                        (int)e->key.forknum, (unsigned long)e->reads, (unsigned long)e->read_blocks,
-                       (unsigned long)e->writes, (unsigned long)e->write_blocks);
+                       (unsigned long)e->writes, (unsigned long)e->write_blocks, (unsigned long)e->extends,
+                       (unsigned long)e->extend_blocks, (unsigned long)e->truncates, (unsigned long)e->fsyncs);
 
       if (e->read_timing.count > 0) {
         appendStringInfoString(&query, "ARRAY[");
@@ -91,12 +98,15 @@ static void smgr_stats_collect_and_insert(void) {
           }
           appendStringInfo(&query, "%lu", (unsigned long)e->write_timing.bins[b]);
         }
-        appendStringInfo(&query, "]::bigint[], %lu, %lu, %lu, %lu)", (unsigned long)e->write_timing.count,
+        appendStringInfo(&query, "]::bigint[], %lu, %lu, %lu, %lu, ", (unsigned long)e->write_timing.count,
                          (unsigned long)e->write_timing.total_us, (unsigned long)e->write_timing.min_us,
                          (unsigned long)e->write_timing.max_us);
       } else {
-        appendStringInfoString(&query, "NULL, NULL, NULL, NULL, NULL)");
+        appendStringInfoString(&query, "NULL, NULL, NULL, NULL, NULL, ");
       }
+
+      appendStringInfo(&query, "%u, '%s', '%s')", e->active_seconds, timestamptz_to_str(e->first_access),
+                       timestamptz_to_str(e->last_access));
 
       SPI_execute(query.data, false, 0);
       pfree(query.data);

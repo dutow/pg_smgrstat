@@ -49,14 +49,23 @@ static void smgr_stats_entry_reset(SmgrStatsEntry* entry) {
   entry->read_blocks = 0;
   entry->writes = 0;
   entry->write_blocks = 0;
+  entry->extends = 0;
+  entry->extend_blocks = 0;
+  entry->truncates = 0;
+  entry->fsyncs = 0;
   smgr_stats_hist_reset(&entry->read_timing);
   smgr_stats_hist_reset(&entry->write_timing);
+  entry->active_seconds = 0;
+  /* last_active_second preserved for correct dedup across period boundaries */
+  entry->first_access = 0;
+  entry->last_access = 0;
 }
 
 SmgrStatsEntry* smgr_stats_get_entry(const SmgrStatsKey* key, bool* found) {
   SmgrStatsEntry* entry = dshash_find_or_insert(get_hash(), key, found);
   if (!*found) {
     smgr_stats_entry_reset(entry);
+    entry->last_active_second = 0;
   }
   return entry;
 }
@@ -76,8 +85,8 @@ static SmgrStatsEntry* snapshot_entries(int* count, bool reset) {
 
   dshash_seq_init(&seq, hash, reset);
   while ((entry = dshash_seq_next(&seq)) != NULL) {
-    /* Skip entries with no activity */
-    if (entry->reads == 0 && entry->writes == 0) {
+    /* Skip entries with no activity this period */
+    if (entry->first_access == 0) {
       continue;
     }
 

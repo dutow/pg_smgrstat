@@ -5,6 +5,8 @@
 #include "common/relpath.h"
 #include "storage/relfilelocator.h"
 
+#include "utils/timestamp.h"
+
 #include "smgr_stats_hist.h"
 
 typedef struct SmgrStatsKey {
@@ -14,12 +16,28 @@ typedef struct SmgrStatsKey {
 
 typedef struct SmgrStatsEntry {
   SmgrStatsKey key; /* Must be first (dshash requirement) */
+
+  /* Operation counters */
   uint64 reads;
   uint64 read_blocks;
   uint64 writes;
   uint64 write_blocks;
+  uint64 extends;
+  uint64 extend_blocks;
+  uint64 truncates;
+  uint64 fsyncs;
+
+  /* Timing histograms */
   SmgrStatsTimingHist read_timing;
   SmgrStatsTimingHist write_timing;
+
+  /* Activity spread (for long collection intervals) */
+  uint32 active_seconds;    /* Distinct seconds with any activity */
+  int64 last_active_second; /* Truncated to second (for dedup) */
+
+  /* Timestamps */
+  TimestampTz first_access; /* Set once on entry creation */
+  TimestampTz last_access;  /* Updated on every operation */
 } SmgrStatsEntry;
 
 /* Get or create an entry, returning it locked (exclusive). Caller must release. */

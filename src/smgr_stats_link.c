@@ -1,5 +1,6 @@
 #include "postgres.h"
 
+#include "datatype/timestamp.h"
 #include "portability/instr_time.h"
 #include "storage/aio.h"
 #include "utils/injection_point.h"
@@ -7,6 +8,18 @@
 
 #include "smgr_stats_link.h"
 #include "smgr_stats_store.h"
+
+static inline void smgr_stats_update_activity(SmgrStatsEntry* entry, TimestampTz now) {
+  if (entry->first_access == 0) {
+    entry->first_access = now;
+  }
+  entry->last_access = now;
+  int64 current_second = now / USECS_PER_SEC;
+  if (current_second != entry->last_active_second) {
+    entry->active_seconds++;
+    entry->last_active_second = current_second;
+  }
+}
 
 static PgAioHandleCallbackID smgr_stats_aio_cb_id = PGAIO_HCB_INVALID;
 static instr_time* aio_start_times = NULL;
@@ -36,6 +49,7 @@ static PgAioResult smgr_stats_readv_complete(PgAioHandle* ioh, PgAioResult prior
       smgr_stats_hist_record(&entry->read_timing, elapsed_us);
     }
 
+    smgr_stats_update_activity(entry, GetCurrentTimestamp());
     smgr_stats_release_entry(entry);
   }
 
@@ -65,6 +79,7 @@ static void smgr_stats_readv(SMgrRelation reln, ForkNumber forknum, BlockNumber 
   entry->reads++;
   entry->read_blocks += nblocks;
   smgr_stats_hist_record(&entry->read_timing, elapsed_us);
+  smgr_stats_update_activity(entry, GetCurrentTimestamp());
   smgr_stats_release_entry(entry);
 }
 
@@ -108,6 +123,56 @@ static void smgr_stats_writev(SMgrRelation reln, ForkNumber forknum, BlockNumber
   entry->writes++;
   entry->write_blocks += nblocks;
   smgr_stats_hist_record(&entry->write_timing, elapsed_us);
+  smgr_stats_update_activity(entry, GetCurrentTimestamp());
+  smgr_stats_release_entry(entry);
+}
+
+static void smgr_stats_extend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum, const void* buffer,
+                              bool skip_fsync, SmgrChainIndex chain_index) {
+  smgr_extend_next(reln, forknum, blocknum, buffer, skip_fsync, chain_index + 1);
+
+  SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
+  bool found;
+  SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
+  entry->extends++;
+  entry->extend_blocks++;
+  smgr_stats_update_activity(entry, GetCurrentTimestamp());
+  smgr_stats_release_entry(entry);
+}
+
+static void smgr_stats_zeroextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum, int nblocks,
+                                  bool skip_fsync, SmgrChainIndex chain_index) {
+  smgr_zeroextend_next(reln, forknum, blocknum, nblocks, skip_fsync, chain_index + 1);
+
+  SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
+  bool found;
+  SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
+  entry->extends++;
+  entry->extend_blocks += nblocks;
+  smgr_stats_update_activity(entry, GetCurrentTimestamp());
+  smgr_stats_release_entry(entry);
+}
+
+static void smgr_stats_truncate(SMgrRelation reln, ForkNumber forknum, BlockNumber old_nblocks, BlockNumber nblocks,
+                                SmgrChainIndex chain_index) {
+  smgr_truncate_next(reln, forknum, old_nblocks, nblocks, chain_index + 1);
+
+  SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
+  bool found;
+  SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
+  entry->truncates++;
+  smgr_stats_update_activity(entry, GetCurrentTimestamp());
+  smgr_stats_release_entry(entry);
+}
+
+static void smgr_stats_immedsync(SMgrRelation reln, ForkNumber forknum, SmgrChainIndex chain_index) {
+  smgr_immedsync_next(reln, forknum, chain_index + 1);
+
+  SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
+  bool found;
+  SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
+  entry->fsyncs++;
+  smgr_stats_update_activity(entry, GetCurrentTimestamp());
   smgr_stats_release_entry(entry);
 }
 
@@ -117,6 +182,10 @@ static const struct f_smgr smgr_stats_smgr = {
     .smgr_readv = smgr_stats_readv,
     .smgr_startreadv = smgr_stats_startreadv,
     .smgr_writev = smgr_stats_writev,
+    .smgr_extend = smgr_stats_extend,
+    .smgr_zeroextend = smgr_stats_zeroextend,
+    .smgr_truncate = smgr_stats_truncate,
+    .smgr_immedsync = smgr_stats_immedsync,
 };
 
 void smgr_stats_register_link(void) {

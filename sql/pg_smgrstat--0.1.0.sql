@@ -9,6 +9,10 @@ CREATE TABLE smgr_stats.history (
     read_blocks int8 NOT NULL DEFAULT 0,
     writes int8 NOT NULL DEFAULT 0,
     write_blocks int8 NOT NULL DEFAULT 0,
+    extends int8 NOT NULL DEFAULT 0,
+    extend_blocks int8 NOT NULL DEFAULT 0,
+    truncates int8 NOT NULL DEFAULT 0,
+    fsyncs int8 NOT NULL DEFAULT 0,
     read_hist bigint[],
     read_count bigint,
     read_total_us bigint,
@@ -18,7 +22,10 @@ CREATE TABLE smgr_stats.history (
     write_count bigint,
     write_total_us bigint,
     write_min_us bigint,
-    write_max_us bigint
+    write_max_us bigint,
+    active_seconds integer NOT NULL DEFAULT 0,
+    first_access timestamptz,
+    last_access timestamptz
 );
 
 CREATE INDEX ON smgr_stats.history USING BRIN (bucket_id);
@@ -35,6 +42,10 @@ CREATE FUNCTION smgr_stats.current(
     OUT read_blocks int8,
     OUT writes int8,
     OUT write_blocks int8,
+    OUT extends int8,
+    OUT extend_blocks int8,
+    OUT truncates int8,
+    OUT fsyncs int8,
     OUT read_hist bigint[],
     OUT read_count bigint,
     OUT read_total_us bigint,
@@ -44,7 +55,10 @@ CREATE FUNCTION smgr_stats.current(
     OUT write_count bigint,
     OUT write_total_us bigint,
     OUT write_min_us bigint,
-    OUT write_max_us bigint
+    OUT write_max_us bigint,
+    OUT active_seconds integer,
+    OUT first_access timestamptz,
+    OUT last_access timestamptz
 ) RETURNS SETOF record
 LANGUAGE c AS 'MODULE_PATHNAME', 'smgr_stats_current';
 
