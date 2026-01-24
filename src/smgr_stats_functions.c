@@ -12,6 +12,16 @@ typedef struct SmgrStatsCurrentCtx {
   TimestampTz collected_at;
 } SmgrStatsCurrentCtx;
 
+static inline void welford_to_datum(const SmgrStatsWelford* w, Datum* values, bool* nulls, int idx) {
+  if (w->count >= 2) {
+    values[idx] = Float8GetDatum(w->mean);
+    values[idx + 1] = Float8GetDatum(smgr_stats_welford_cov(w));
+  } else {
+    nulls[idx] = true;
+    nulls[idx + 1] = true;
+  }
+}
+
 PG_FUNCTION_INFO_V1(smgr_stats_current);
 
 Datum smgr_stats_current(PG_FUNCTION_ARGS) {
@@ -29,7 +39,7 @@ Datum smgr_stats_current(PG_FUNCTION_ARGS) {
     funcctx->user_fctx = ctx;
     funcctx->max_calls = count;
 
-    TupleDesc tupdesc = CreateTemplateTupleDesc(31);
+    TupleDesc tupdesc = CreateTemplateTupleDesc(41);
     TupleDescInitEntry(tupdesc, 1, "bucket_id", INT8OID, -1, 0);
     TupleDescInitEntry(tupdesc, 2, "collected_at", TIMESTAMPTZOID, -1, 0);
     TupleDescInitEntry(tupdesc, 3, "spcoid", OIDOID, -1, 0);
@@ -58,9 +68,19 @@ Datum smgr_stats_current(PG_FUNCTION_ARGS) {
     TupleDescInitEntry(tupdesc, 26, "read_iat_cov", FLOAT8OID, -1, 0);
     TupleDescInitEntry(tupdesc, 27, "write_iat_mean_us", FLOAT8OID, -1, 0);
     TupleDescInitEntry(tupdesc, 28, "write_iat_cov", FLOAT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 29, "active_seconds", INT4OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 30, "first_access", TIMESTAMPTZOID, -1, 0);
-    TupleDescInitEntry(tupdesc, 31, "last_access", TIMESTAMPTZOID, -1, 0);
+    TupleDescInitEntry(tupdesc, 29, "sequential_reads", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 30, "random_reads", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 31, "sequential_writes", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 32, "random_writes", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 33, "read_run_mean", FLOAT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 34, "read_run_cov", FLOAT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 35, "read_run_count", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 36, "write_run_mean", FLOAT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 37, "write_run_cov", FLOAT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 38, "write_run_count", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 39, "active_seconds", INT4OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 40, "first_access", TIMESTAMPTZOID, -1, 0);
+    TupleDescInitEntry(tupdesc, 41, "last_access", TIMESTAMPTZOID, -1, 0);
     funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
     MemoryContextSwitchTo(oldctx);
@@ -71,8 +91,8 @@ Datum smgr_stats_current(PG_FUNCTION_ARGS) {
 
   if (funcctx->call_cntr < funcctx->max_calls) {
     SmgrStatsEntry* e = &ctx->entries[funcctx->call_cntr];
-    Datum values[31];
-    bool nulls[31] = {false};
+    Datum values[41];
+    bool nulls[41] = {false};
 
     values[0] = Int64GetDatum(ctx->bucket_id);
     values[1] = TimestampTzGetDatum(ctx->collected_at);
@@ -117,25 +137,22 @@ Datum smgr_stats_current(PG_FUNCTION_ARGS) {
       nulls[23] = true;
     }
 
-    if (e->read_burst.iat.count >= 2) {
-      values[24] = Float8GetDatum(e->read_burst.iat.mean);
-      values[25] = Float8GetDatum(smgr_stats_welford_cov(&e->read_burst.iat));
-    } else {
-      nulls[24] = true;
-      nulls[25] = true;
-    }
+    welford_to_datum(&e->read_burst.iat, values, nulls, 24);
+    welford_to_datum(&e->write_burst.iat, values, nulls, 26);
 
-    if (e->write_burst.iat.count >= 2) {
-      values[26] = Float8GetDatum(e->write_burst.iat.mean);
-      values[27] = Float8GetDatum(smgr_stats_welford_cov(&e->write_burst.iat));
-    } else {
-      nulls[26] = true;
-      nulls[27] = true;
-    }
+    values[28] = UInt64GetDatum(e->sequential_reads);
+    values[29] = UInt64GetDatum(e->random_reads);
+    values[30] = UInt64GetDatum(e->sequential_writes);
+    values[31] = UInt64GetDatum(e->random_writes);
 
-    values[28] = Int32GetDatum((int32)e->active_seconds);
-    values[29] = TimestampTzGetDatum(e->first_access);
-    values[30] = TimestampTzGetDatum(e->last_access);
+    welford_to_datum(&e->read_runs, values, nulls, 32);
+    values[34] = Int64GetDatum((int64)e->read_runs.count);
+    welford_to_datum(&e->write_runs, values, nulls, 35);
+    values[37] = Int64GetDatum((int64)e->write_runs.count);
+
+    values[38] = Int32GetDatum((int32)e->active_seconds);
+    values[39] = TimestampTzGetDatum(e->first_access);
+    values[40] = TimestampTzGetDatum(e->last_access);
 
     HeapTuple tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
     SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));

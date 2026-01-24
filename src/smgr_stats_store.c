@@ -58,6 +58,12 @@ static void smgr_stats_entry_reset(SmgrStatsEntry* entry) {
   smgr_stats_welford_reset(&entry->read_burst.iat);
   smgr_stats_welford_reset(&entry->write_burst.iat);
   /* last_op_time preserved for correct IAT across period boundaries */
+  entry->sequential_reads = 0;
+  entry->random_reads = 0;
+  entry->sequential_writes = 0;
+  entry->random_writes = 0;
+  smgr_stats_welford_reset(&entry->read_runs);
+  smgr_stats_welford_reset(&entry->write_runs);
   entry->active_seconds = 0;
   /* last_active_second preserved for correct dedup across period boundaries */
   entry->first_access = 0;

@@ -10,6 +10,9 @@
 #include "smgr_stats_hist.h"
 #include "smgr_stats_welford.h"
 
+/* Sequential run length distribution: Welford on completed streak lengths. */
+typedef SmgrStatsWelford SmgrStatsRunDist;
+
 /* Inter-arrival time burstiness: Welford on time between consecutive operations. */
 typedef struct SmgrStatsBurstiness {
   SmgrStatsWelford iat;     /* Inter-arrival time statistics (microseconds) */
@@ -41,6 +44,16 @@ typedef struct SmgrStatsEntry {
   /* Burstiness: inter-arrival time statistics */
   SmgrStatsBurstiness read_burst;
   SmgrStatsBurstiness write_burst;
+
+  /* Sequential/random access counters */
+  uint64 sequential_reads;
+  uint64 random_reads;
+  uint64 sequential_writes;
+  uint64 random_writes;
+
+  /* Sequential run length distribution (completed streaks) */
+  SmgrStatsRunDist read_runs;
+  SmgrStatsRunDist write_runs;
 
   /* Activity spread (for long collection intervals) */
   uint32 active_seconds;    /* Distinct seconds with any activity */

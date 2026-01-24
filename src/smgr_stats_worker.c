@@ -37,6 +37,14 @@ static void sighup_handler(SIGNAL_ARGS) {
   errno = save_errno;
 }
 
+static void welford_to_query(StringInfo query, const SmgrStatsWelford* w) {
+  if (w->count >= 2) {
+    appendStringInfo(query, "%g, %g, ", w->mean, smgr_stats_welford_cov(w));
+  } else {
+    appendStringInfoString(query, "NULL, NULL, ");
+  }
+}
+
 static void smgr_stats_collect_and_insert(void) {
   int count = 0;
   int64 bucket_id;
@@ -67,6 +75,9 @@ static void smgr_stats_collect_and_insert(void) {
                        " read_hist, read_count, read_total_us, read_min_us, read_max_us,"
                        " write_hist, write_count, write_total_us, write_min_us, write_max_us,"
                        " read_iat_mean_us, read_iat_cov, write_iat_mean_us, write_iat_cov,"
+                       " sequential_reads, random_reads, sequential_writes, random_writes,"
+                       " read_run_mean, read_run_cov, read_run_count,"
+                       " write_run_mean, write_run_cov, write_run_count,"
                        " active_seconds, first_access, last_access) "
                        "VALUES (%ld, %u, %u, %u, %d,"
                        " %lu, %lu, %lu, %lu,"
@@ -106,17 +117,17 @@ static void smgr_stats_collect_and_insert(void) {
         appendStringInfoString(&query, "NULL, NULL, NULL, NULL, NULL, ");
       }
 
-      if (e->read_burst.iat.count >= 2) {
-        appendStringInfo(&query, "%g, %g, ", e->read_burst.iat.mean, smgr_stats_welford_cov(&e->read_burst.iat));
-      } else {
-        appendStringInfoString(&query, "NULL, NULL, ");
-      }
+      welford_to_query(&query, &e->read_burst.iat);
+      welford_to_query(&query, &e->write_burst.iat);
 
-      if (e->write_burst.iat.count >= 2) {
-        appendStringInfo(&query, "%g, %g, ", e->write_burst.iat.mean, smgr_stats_welford_cov(&e->write_burst.iat));
-      } else {
-        appendStringInfoString(&query, "NULL, NULL, ");
-      }
+      appendStringInfo(&query, "%lu, %lu, %lu, %lu, ", (unsigned long)e->sequential_reads,
+                       (unsigned long)e->random_reads, (unsigned long)e->sequential_writes,
+                       (unsigned long)e->random_writes);
+
+      welford_to_query(&query, &e->read_runs);
+      appendStringInfo(&query, "%lu, ", (unsigned long)e->read_runs.count);
+      welford_to_query(&query, &e->write_runs);
+      appendStringInfo(&query, "%lu, ", (unsigned long)e->write_runs.count);
 
       appendStringInfo(&query, "%u, '%s', '%s')", e->active_seconds, timestamptz_to_str(e->first_access),
                        timestamptz_to_str(e->last_access));
@@ -186,6 +197,10 @@ void smgr_stats_worker_main(Datum main_arg) {
       smgr_stats_collect_and_insert();
     }
   }
+
+  /* Final collection: capture any stats flushed by exiting backends */
+  pgstat_report_activity(STATE_RUNNING, "final smgr stats collection");
+  smgr_stats_collect_and_insert();
 
   proc_exit(0);
 }
