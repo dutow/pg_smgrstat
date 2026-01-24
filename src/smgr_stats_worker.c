@@ -2,6 +2,7 @@
 
 #include "access/xact.h"
 #include "executor/spi.h"
+#include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
@@ -54,17 +55,51 @@ static void smgr_stats_collect_and_insert(void) {
   {
     for (int i = 0; i < count; i++) {
       SmgrStatsEntry* e = &snapshot[i];
-      char query[512];
+      StringInfoData query;
+      initStringInfo(&query);
 
-      snprintf(query, sizeof(query),
-               "INSERT INTO smgr_stats.history "
-               "(bucket_id, spcoid, dboid, relnumber, forknum, reads, read_blocks, writes, write_blocks) "
-               "VALUES (%ld, %u, %u, %u, %d, %lu, %lu, %lu, %lu)",
-               (long)bucket_id, e->key.locator.spcOid, e->key.locator.dbOid, e->key.locator.relNumber,
-               (int)e->key.forknum, (unsigned long)e->reads, (unsigned long)e->read_blocks, (unsigned long)e->writes,
-               (unsigned long)e->write_blocks);
+      appendStringInfo(&query,
+                       "INSERT INTO smgr_stats.history "
+                       "(bucket_id, spcoid, dboid, relnumber, forknum, reads, read_blocks, writes, write_blocks,"
+                       " read_hist, read_count, read_total_us, read_min_us, read_max_us,"
+                       " write_hist, write_count, write_total_us, write_min_us, write_max_us) "
+                       "VALUES (%ld, %u, %u, %u, %d, %lu, %lu, %lu, %lu, ",
+                       (long)bucket_id, e->key.locator.spcOid, e->key.locator.dbOid, e->key.locator.relNumber,
+                       (int)e->key.forknum, (unsigned long)e->reads, (unsigned long)e->read_blocks,
+                       (unsigned long)e->writes, (unsigned long)e->write_blocks);
 
-      SPI_execute(query, false, 0);
+      if (e->read_timing.count > 0) {
+        appendStringInfoString(&query, "ARRAY[");
+        for (int b = 0; b < SMGR_STATS_HIST_BINS; b++) {
+          if (b > 0) {
+            appendStringInfoChar(&query, ',');
+          }
+          appendStringInfo(&query, "%lu", (unsigned long)e->read_timing.bins[b]);
+        }
+        appendStringInfo(&query, "]::bigint[], %lu, %lu, %lu, %lu, ", (unsigned long)e->read_timing.count,
+                         (unsigned long)e->read_timing.total_us, (unsigned long)e->read_timing.min_us,
+                         (unsigned long)e->read_timing.max_us);
+      } else {
+        appendStringInfoString(&query, "NULL, NULL, NULL, NULL, NULL, ");
+      }
+
+      if (e->write_timing.count > 0) {
+        appendStringInfoString(&query, "ARRAY[");
+        for (int b = 0; b < SMGR_STATS_HIST_BINS; b++) {
+          if (b > 0) {
+            appendStringInfoChar(&query, ',');
+          }
+          appendStringInfo(&query, "%lu", (unsigned long)e->write_timing.bins[b]);
+        }
+        appendStringInfo(&query, "]::bigint[], %lu, %lu, %lu, %lu)", (unsigned long)e->write_timing.count,
+                         (unsigned long)e->write_timing.total_us, (unsigned long)e->write_timing.min_us,
+                         (unsigned long)e->write_timing.max_us);
+      } else {
+        appendStringInfoString(&query, "NULL, NULL, NULL, NULL, NULL)");
+      }
+
+      SPI_execute(query.data, false, 0);
+      pfree(query.data);
     }
 
     PopActiveSnapshot();

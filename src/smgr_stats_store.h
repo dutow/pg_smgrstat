@@ -5,6 +5,8 @@
 #include "common/relpath.h"
 #include "storage/relfilelocator.h"
 
+#include "smgr_stats_hist.h"
+
 typedef struct SmgrStatsKey {
   RelFileLocator locator;
   ForkNumber forknum;
@@ -16,6 +18,8 @@ typedef struct SmgrStatsEntry {
   uint64 read_blocks;
   uint64 writes;
   uint64 write_blocks;
+  SmgrStatsTimingHist read_timing;
+  SmgrStatsTimingHist write_timing;
 } SmgrStatsEntry;
 
 /* Get or create an entry, returning it locked (exclusive). Caller must release. */

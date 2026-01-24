@@ -44,13 +44,19 @@ static dshash_table* get_hash(void) {
   return stats_hash;
 }
 
+static void smgr_stats_entry_reset(SmgrStatsEntry* entry) {
+  entry->reads = 0;
+  entry->read_blocks = 0;
+  entry->writes = 0;
+  entry->write_blocks = 0;
+  smgr_stats_hist_reset(&entry->read_timing);
+  smgr_stats_hist_reset(&entry->write_timing);
+}
+
 SmgrStatsEntry* smgr_stats_get_entry(const SmgrStatsKey* key, bool* found) {
   SmgrStatsEntry* entry = dshash_find_or_insert(get_hash(), key, found);
   if (!*found) {
-    entry->reads = 0;
-    entry->read_blocks = 0;
-    entry->writes = 0;
-    entry->write_blocks = 0;
+    smgr_stats_entry_reset(entry);
   }
   return entry;
 }
@@ -85,10 +91,7 @@ static SmgrStatsEntry* snapshot_entries(int* count, bool reset) {
     result[n] = *entry;
 
     if (reset) {
-      entry->reads = 0;
-      entry->read_blocks = 0;
-      entry->writes = 0;
-      entry->write_blocks = 0;
+      smgr_stats_entry_reset(entry);
     }
 
     n++;

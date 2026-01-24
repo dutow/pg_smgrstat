@@ -16,14 +16,18 @@ pg_sharedir = run_command(pg_config, '--sharedir', check: true).stdout().strip()
 
 pg_includes = include_directories(pg_includedir_server)
 
+libm = meson.get_compiler('c').find_library('m', required: false)
+
 shared_module('pg_smgrstat',
   'src/pg_smgrstat.c',
   'src/smgr_stats_guc.c',
   'src/smgr_stats_store.c',
   'src/smgr_stats_link.c',
   'src/smgr_stats_worker.c',
+  'src/smgr_stats_hist.c',
   'src/smgr_stats_functions.c',
   include_directories: [pg_includes, include_directories('src')],
+  dependencies: [libm],
   name_prefix: '',  # produce pg_smgrstat.so, not libpg_smgrstat.so
   install: true,
   install_dir: pg_pkglibdir,
