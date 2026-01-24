@@ -1,0 +1,5 @@
+comment = 'Per-file I/O statistics at the SMGR level'
+default_version = '@VERSION@'
+module_pathname = '$libdir/pg_smgrstat'
+schema = smgr_stats
+relocatable = false
