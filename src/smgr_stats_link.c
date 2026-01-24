@@ -2,6 +2,7 @@
 
 #include "portability/instr_time.h"
 #include "storage/aio.h"
+#include "utils/injection_point.h"
 #include "utils/memutils.h"
 
 #include "smgr_stats_link.h"
@@ -15,6 +16,8 @@ static PgAioResult smgr_stats_readv_complete(PgAioHandle* ioh, PgAioResult prior
   if (prior_result.status != PGAIO_RS_OK) {
     return prior_result;
   }
+
+  INJECTION_POINT("smgr-stats-aio-read-complete", NULL);
 
   PgAioTargetData* td = pgaio_io_get_target_data(ioh);
 
@@ -49,6 +52,7 @@ static void smgr_stats_readv(SMgrRelation reln, ForkNumber forknum, BlockNumber 
   INSTR_TIME_SET_CURRENT(start);
 
   smgr_readv_next(reln, forknum, blocknum, buffers, nblocks, chain_index + 1);
+  INJECTION_POINT("smgr-stats-after-readv", NULL);
 
   instr_time end;
   INSTR_TIME_SET_CURRENT(end);
@@ -91,6 +95,7 @@ static void smgr_stats_writev(SMgrRelation reln, ForkNumber forknum, BlockNumber
   INSTR_TIME_SET_CURRENT(start);
 
   smgr_writev_next(reln, forknum, blocknum, buffers, nblocks, skip_fsync, chain_index + 1);
+  INJECTION_POINT("smgr-stats-after-writev", NULL);
 
   instr_time end;
   INSTR_TIME_SET_CURRENT(end);

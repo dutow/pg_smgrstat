@@ -52,3 +52,22 @@ CREATE FUNCTION smgr_stats.hist_percentile(hist bigint[], pct double precision)
 RETURNS double precision
 LANGUAGE c IMMUTABLE STRICT
 AS 'MODULE_PATHNAME', 'smgr_stats_hist_percentile';
+
+-- Debug functions for injecting artificial I/O delays.
+-- Require PostgreSQL built with --enable-injection-points; otherwise they
+-- return an error when called.
+CREATE FUNCTION smgr_stats._debug_set_read_delay(delay_us bigint)
+RETURNS void LANGUAGE c VOLATILE
+AS 'MODULE_PATHNAME', 'smgr_stats_debug_set_read_delay';
+
+CREATE FUNCTION smgr_stats._debug_clear_read_delay()
+RETURNS void LANGUAGE c VOLATILE
+AS 'MODULE_PATHNAME', 'smgr_stats_debug_clear_read_delay';
+
+CREATE FUNCTION smgr_stats._debug_set_write_delay(delay_us bigint)
+RETURNS void LANGUAGE c VOLATILE
+AS 'MODULE_PATHNAME', 'smgr_stats_debug_set_write_delay';
+
+CREATE FUNCTION smgr_stats._debug_clear_write_delay()
+RETURNS void LANGUAGE c VOLATILE
+AS 'MODULE_PATHNAME', 'smgr_stats_debug_clear_write_delay';
