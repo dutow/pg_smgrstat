@@ -190,7 +190,7 @@ RSpec.describe "pg_smgrstat metadata in history",
     result = conn.exec(<<~SQL)
       SELECT fork_name, relkind_name
       FROM smgr_stats.history_v
-      WHERE relname = 'test_view_table'
+      WHERE relname = 'test_view_table' AND forknum = 0
       LIMIT 1
     SQL
 
