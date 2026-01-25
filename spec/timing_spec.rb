@@ -7,7 +7,7 @@ RSpec.describe "pg_smgrstat timing histograms" do
       conn.exec("INSERT INTO test_write_only SELECT g, repeat('x', 100) FROM generate_series(1, 1000) g")
       conn.exec("CHECKPOINT")
 
-      result = conn.exec(<<~SQL)
+      result = stats_conn.exec(<<~SQL)
         SELECT read_hist, read_count, read_total_us, read_min_us, read_max_us
         FROM smgr_stats.current()
         WHERE writes > 0 AND reads = 0
@@ -27,7 +27,7 @@ RSpec.describe "pg_smgrstat timing histograms" do
       conn.exec("INSERT INTO test_write_timing SELECT g, repeat('x', 100) FROM generate_series(1, 1000) g")
       conn.exec("CHECKPOINT")
 
-      result = conn.exec(<<~SQL)
+      result = stats_conn.exec(<<~SQL)
         SELECT write_hist, write_count, write_total_us, write_min_us, write_max_us
         FROM smgr_stats.current()
         WHERE write_count IS NOT NULL AND write_count > 0
@@ -48,10 +48,10 @@ RSpec.describe "pg_smgrstat timing histograms" do
     end
 
     it "reports read timing histogram after reads" do
-      pg.evict_buffers
+      pg.evict_buffers(dbname: TEST_DATABASE)
       conn.exec("SELECT count(*) FROM test_write_timing")
 
-      result = conn.exec(<<~SQL)
+      result = stats_conn.exec(<<~SQL)
         SELECT read_hist, read_count, read_total_us, read_min_us, read_max_us
         FROM smgr_stats.current()
         WHERE read_count IS NOT NULL AND read_count > 0
@@ -72,7 +72,7 @@ RSpec.describe "pg_smgrstat timing histograms" do
     end
 
     it "histogram array has 32 elements" do
-      result = conn.exec(<<~SQL)
+      result = stats_conn.exec(<<~SQL)
         SELECT array_length(write_hist, 1) AS len
         FROM smgr_stats.current()
         WHERE write_count IS NOT NULL
@@ -82,7 +82,7 @@ RSpec.describe "pg_smgrstat timing histograms" do
     end
 
     it "histogram bin sum equals count" do
-      result = conn.exec(<<~SQL)
+      result = stats_conn.exec(<<~SQL)
         SELECT write_count,
                (SELECT sum(v) FROM unnest(write_hist) AS v) AS bin_sum
         FROM smgr_stats.current()
@@ -95,20 +95,20 @@ RSpec.describe "pg_smgrstat timing histograms" do
 
   context "hist_percentile function" do
     it "returns NULL for empty histogram" do
-      result = conn.exec("SELECT smgr_stats.hist_percentile(ARRAY[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]::bigint[], 0.5)")
+      result = stats_conn.exec("SELECT smgr_stats.hist_percentile(ARRAY[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]::bigint[], 0.5)")
       expect(result[0]["hist_percentile"]).to be_nil
     end
 
     it "returns 0 for p50 when all values are in bin 0" do
       hist = "ARRAY[100,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]::bigint[]"
-      result = conn.exec("SELECT smgr_stats.hist_percentile(#{hist}, 0.5)")
+      result = stats_conn.exec("SELECT smgr_stats.hist_percentile(#{hist}, 0.5)")
       expect(result[0]["hist_percentile"].to_f).to eq(0.0)
     end
 
     it "returns correct bin lower bound for concentrated histogram" do
       # All 100 observations in bin 5 (covers [16, 32) us)
       hist = "ARRAY[0,0,0,0,0,100,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]::bigint[]"
-      result = conn.exec("SELECT smgr_stats.hist_percentile(#{hist}, 0.5)")
+      result = stats_conn.exec("SELECT smgr_stats.hist_percentile(#{hist}, 0.5)")
       expect(result[0]["hist_percentile"].to_f).to eq(16.0) # 2^(5-1) = 16
     end
 
@@ -116,17 +116,17 @@ RSpec.describe "pg_smgrstat timing histograms" do
       # 50 in bin 3 (covers [4,8)), 50 in bin 7 (covers [64,128))
       hist = "ARRAY[0,0,0,50,0,0,0,50,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]::bigint[]"
       # P25 should be in bin 3 -> 4.0
-      r25 = conn.exec("SELECT smgr_stats.hist_percentile(#{hist}, 0.25)")
+      r25 = stats_conn.exec("SELECT smgr_stats.hist_percentile(#{hist}, 0.25)")
       expect(r25[0]["hist_percentile"].to_f).to eq(4.0)
       # P75 should be in bin 7 -> 64.0
-      r75 = conn.exec("SELECT smgr_stats.hist_percentile(#{hist}, 0.75)")
+      r75 = stats_conn.exec("SELECT smgr_stats.hist_percentile(#{hist}, 0.75)")
       expect(r75[0]["hist_percentile"].to_f).to eq(64.0)
     end
 
     it "rejects percentile out of range" do
       hist = "ARRAY[1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]::bigint[]"
-      expect { conn.exec("SELECT smgr_stats.hist_percentile(#{hist}, 1.5)") }.to raise_error(PG::NumericValueOutOfRange)
-      expect { conn.exec("SELECT smgr_stats.hist_percentile(#{hist}, -0.1)") }.to raise_error(PG::NumericValueOutOfRange)
+      expect { stats_conn.exec("SELECT smgr_stats.hist_percentile(#{hist}, 1.5)") }.to raise_error(PG::NumericValueOutOfRange)
+      expect { stats_conn.exec("SELECT smgr_stats.hist_percentile(#{hist}, -0.1)") }.to raise_error(PG::NumericValueOutOfRange)
     end
   end
 
@@ -141,7 +141,7 @@ RSpec.describe "pg_smgrstat write bucket precision" do
   WRITE_EXPECTED_BIN = 14  # 0-indexed
 
   before(:all) do
-    @pg.connect { |c| c.exec("CREATE EXTENSION IF NOT EXISTS pg_smgrstat_debug") }
+    @pg.connect(dbname: TEST_DATABASE) { |c| c.exec("CREATE EXTENSION IF NOT EXISTS pg_smgrstat_debug") }
   end
 
   after do
@@ -151,7 +151,7 @@ RSpec.describe "pg_smgrstat write bucket precision" do
   it "places writes into the expected histogram bin" do
     # Capture baseline before setting delay (pre-existing writes from setup)
     baseline_bins = Array.new(32, 0)
-    baseline = conn.exec(<<~SQL)
+    baseline = stats_conn.exec(<<~SQL)
       SELECT write_hist FROM smgr_stats.current()
       WHERE write_count IS NOT NULL AND write_count > 0
     SQL
@@ -166,7 +166,7 @@ RSpec.describe "pg_smgrstat write bucket precision" do
     conn.exec("INSERT INTO test_write_bucket SELECT g, repeat('x', 200) FROM generate_series(1, 50) g")
     conn.exec("CHECKPOINT")
 
-    result = conn.exec(<<~SQL)
+    result = stats_conn.exec(<<~SQL)
       SELECT write_hist, write_count
       FROM smgr_stats.current()
       WHERE write_count IS NOT NULL AND write_count > 0
@@ -198,7 +198,7 @@ RSpec.describe "pg_smgrstat write bucket precision" do
     conn.exec("INSERT INTO test_write_minmax SELECT g FROM generate_series(1, 10) g")
     conn.exec("CHECKPOINT")
 
-    result = conn.exec(<<~SQL)
+    result = stats_conn.exec(<<~SQL)
       SELECT write_min_us, write_max_us
       FROM smgr_stats.current()
       WHERE write_count IS NOT NULL AND write_count > 0
@@ -219,7 +219,7 @@ RSpec.describe "pg_smgrstat write bucket precision" do
     conn.exec("INSERT INTO test_pct_bucket SELECT g, repeat('x', 200) FROM generate_series(1, 50) g")
     conn.exec("CHECKPOINT")
 
-    result = conn.exec(<<~SQL)
+    result = stats_conn.exec(<<~SQL)
       SELECT smgr_stats.hist_percentile(write_hist, 0.5) AS p50
       FROM smgr_stats.current()
       WHERE write_count IS NOT NULL AND write_count > 0
@@ -240,7 +240,7 @@ RSpec.describe "pg_smgrstat read bucket precision" do
   READ_EXPECTED_BIN = 14  # 0-indexed
 
   before(:all) do
-    @pg.connect do |c|
+    @pg.connect(dbname: TEST_DATABASE) do |c|
       c.exec("CREATE EXTENSION IF NOT EXISTS pg_smgrstat_debug")
       c.exec("CREATE EXTENSION IF NOT EXISTS pg_buffercache")
       c.exec("CREATE TABLE test_read_bucket (id int, data text)")
@@ -256,7 +256,7 @@ RSpec.describe "pg_smgrstat read bucket precision" do
   it "places reads into the expected histogram bin" do
     # Capture baseline before setting delay (pre-existing reads from setup)
     baseline_bins = Array.new(32, 0)
-    baseline = conn.exec(<<~SQL)
+    baseline = stats_conn.exec(<<~SQL)
       SELECT read_hist FROM smgr_stats.current()
       WHERE read_count IS NOT NULL AND read_count > 0
     SQL
@@ -269,7 +269,7 @@ RSpec.describe "pg_smgrstat read bucket precision" do
     conn.exec("SELECT pg_buffercache_evict_all()")
     conn.exec("SELECT count(*) FROM test_read_bucket")
 
-    result = conn.exec(<<~SQL)
+    result = stats_conn.exec(<<~SQL)
       SELECT read_hist, read_count
       FROM smgr_stats.current()
       WHERE read_count IS NOT NULL AND read_count > 0
@@ -295,15 +295,22 @@ RSpec.describe "pg_smgrstat read bucket precision" do
   end
 
   it "min_us and max_us reflect the injected delay" do
+    # Get table identifiers before setting delay
+    relfilenode = lookup_relfilenode(conn, "test_read_bucket")
+    db_oid = test_db_oid(conn)
+
     conn.exec("SELECT smgr_stats_debug.set_read_delay(#{READ_DELAY_US})")
     conn.exec("SELECT pg_buffercache_evict_all()")
     conn.exec("SELECT count(*) FROM test_read_bucket")
+    # Clear injection point BEFORE opening stats_conn to avoid crash when new
+    # connection authenticates (reads pg_authid) while injection point is active
+    # but not loaded in that backend
+    conn.exec("SELECT smgr_stats_debug.clear_read_delay()")
 
-    result = conn.exec(<<~SQL)
+    result = stats_conn.exec(<<~SQL)
       SELECT read_min_us, read_max_us
       FROM smgr_stats.current()
-      WHERE read_count IS NOT NULL AND read_count > 0
-      LIMIT 1
+      WHERE relnumber = #{relfilenode} AND dboid = #{db_oid} AND forknum = 0
     SQL
     expect(result.ntuples).to eq(1)
     min_us = result[0]["read_min_us"].to_i
@@ -322,12 +329,12 @@ RSpec.describe "pg_smgrstat timing background worker",
       conn.exec("CREATE TABLE test_timing_history (id int, data text)")
       conn.exec("INSERT INTO test_timing_history SELECT g, repeat('x', 100) FROM generate_series(1, 1000) g")
       conn.exec("CHECKPOINT")
-      pg.evict_buffers
+      pg.evict_buffers(dbname: TEST_DATABASE)
       conn.exec("SELECT count(*) FROM test_timing_history")
 
       sleep 3  # wait for collection
 
-      result = conn.exec(<<~SQL)
+      result = stats_conn.exec(<<~SQL)
         SELECT read_hist, read_count, write_hist, write_count
         FROM smgr_stats.history
         WHERE (read_count IS NOT NULL AND read_count > 0)

@@ -157,7 +157,7 @@ static void smgr_stats_readv(SMgrRelation reln, ForkNumber forknum, BlockNumber 
 
   bool found;
   SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
-  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+  if ((!found || !entry->meta.metadata_valid) && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
     smgr_stats_add_pending_metadata(&tracking_key);
   }
   entry->reads++;
@@ -200,7 +200,7 @@ static void smgr_stats_startreadv(PgAioHandle* ioh, SMgrRelation reln, ForkNumbe
   /* Ensure entry exists before I/O (so completion callback can find it without allocating) */
   bool found;
   SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
-  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+  if ((!found || !entry->meta.metadata_valid) && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
     smgr_stats_add_pending_metadata(&tracking_key);
   }
   smgr_stats_release_entry(entry);
@@ -241,7 +241,7 @@ static void smgr_stats_writev(SMgrRelation reln, ForkNumber forknum, BlockNumber
 
   bool found;
   SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
-  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+  if ((!found || !entry->meta.metadata_valid) && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
     smgr_stats_add_pending_metadata(&tracking_key);
   }
   entry->writes++;
@@ -272,7 +272,7 @@ static void smgr_stats_extend(SMgrRelation reln, ForkNumber forknum, BlockNumber
 
   bool found;
   SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
-  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+  if ((!found || !entry->meta.metadata_valid) && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
     smgr_stats_add_pending_metadata(&tracking_key);
   }
   entry->extends++;
@@ -292,7 +292,7 @@ static void smgr_stats_zeroextend(SMgrRelation reln, ForkNumber forknum, BlockNu
 
   bool found;
   SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
-  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+  if ((!found || !entry->meta.metadata_valid) && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
     smgr_stats_add_pending_metadata(&tracking_key);
   }
   entry->extends++;
@@ -312,7 +312,7 @@ static void smgr_stats_truncate(SMgrRelation reln, ForkNumber forknum, BlockNumb
 
   bool found;
   SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
-  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+  if ((!found || !entry->meta.metadata_valid) && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
     smgr_stats_add_pending_metadata(&tracking_key);
   }
   entry->truncates++;
@@ -330,7 +330,7 @@ static void smgr_stats_immedsync(SMgrRelation reln, ForkNumber forknum, SmgrChai
 
   bool found;
   SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
-  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+  if ((!found || !entry->meta.metadata_valid) && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
     smgr_stats_add_pending_metadata(&tracking_key);
   }
   entry->fsyncs++;
@@ -348,7 +348,7 @@ static void smgr_stats_open(SMgrRelation reln, SmgrChainIndex chain_index) {
 
   bool found;
   SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
-  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+  if ((!found || !entry->meta.metadata_valid) && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
     smgr_stats_add_pending_metadata(&tracking_key);
   }
   smgr_stats_release_entry(entry);
@@ -374,7 +374,7 @@ static void smgr_stats_create(RelFileLocator relold, SMgrRelation reln, ForkNumb
 
   bool found;
   SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
-  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+  if ((!found || !entry->meta.metadata_valid) && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
     smgr_stats_add_pending_metadata(&tracking_key);
   }
   smgr_stats_release_entry(entry);

@@ -59,8 +59,14 @@ class PgInstance
     end
   end
 
-  def evict_buffers
-    connect do |c|
+  def create_database(dbname)
+    connect(dbname: "postgres") do |c|
+      c.exec("CREATE DATABASE #{c.escape_identifier(dbname)}")
+    end
+  end
+
+  def evict_buffers(dbname: "postgres")
+    connect(dbname: dbname) do |c|
       c.exec("CREATE EXTENSION IF NOT EXISTS pg_buffercache") unless @buffercache_installed
       @buffercache_installed = true
       c.exec("SELECT pg_buffercache_evict_all()")

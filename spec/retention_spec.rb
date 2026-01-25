@@ -12,11 +12,11 @@ RSpec.describe "pg_smgrstat retention policy",
     sleep 3
 
     # Verify we have recent entries
-    result = conn.exec("SELECT count(*) AS n FROM smgr_stats.history")
+    result = stats_conn.exec("SELECT count(*) AS n FROM smgr_stats.history")
     expect(result[0]["n"].to_i).to be > 0
 
     # Insert old entries manually (2 hours ago, older than retention_hours=1)
-    conn.exec(<<~SQL)
+    stats_conn.exec(<<~SQL)
       INSERT INTO smgr_stats.history (bucket_id, spcoid, dboid, relnumber, forknum, collected_at,
                                       reads, read_blocks, writes, write_blocks, extends, extend_blocks,
                                       truncates, fsyncs, sequential_reads, random_reads,
@@ -27,18 +27,18 @@ RSpec.describe "pg_smgrstat retention policy",
     SQL
 
     # Verify old entry exists
-    old_count = conn.exec("SELECT count(*) AS n FROM smgr_stats.history WHERE relnumber = 99999")
+    old_count = stats_conn.exec("SELECT count(*) AS n FROM smgr_stats.history WHERE relnumber = 99999")
     expect(old_count[0]["n"].to_i).to eq(1)
 
     # Wait for next collection cycle (which runs retention)
     sleep 3
 
     # Old entry should be deleted
-    old_count_after = conn.exec("SELECT count(*) AS n FROM smgr_stats.history WHERE relnumber = 99999")
+    old_count_after = stats_conn.exec("SELECT count(*) AS n FROM smgr_stats.history WHERE relnumber = 99999")
     expect(old_count_after[0]["n"].to_i).to eq(0)
 
     # Recent entries should still exist
-    recent_count = conn.exec("SELECT count(*) AS n FROM smgr_stats.history WHERE collected_at > now() - interval '1 hour'")
+    recent_count = stats_conn.exec("SELECT count(*) AS n FROM smgr_stats.history WHERE collected_at > now() - interval '1 hour'")
     expect(recent_count[0]["n"].to_i).to be > 0
   end
 end
@@ -56,7 +56,7 @@ RSpec.describe "pg_smgrstat retention disabled",
     sleep 3
 
     # Insert old entry (would be deleted if retention were enabled)
-    conn.exec(<<~SQL)
+    stats_conn.exec(<<~SQL)
       INSERT INTO smgr_stats.history (bucket_id, spcoid, dboid, relnumber, forknum, collected_at,
                                       reads, read_blocks, writes, write_blocks, extends, extend_blocks,
                                       truncates, fsyncs, sequential_reads, random_reads,
@@ -66,14 +66,14 @@ RSpec.describe "pg_smgrstat retention disabled",
               100, 100, 50, 50, 0, 0, 0, 0, 80, 20, 40, 10, 5, now() - interval '1000 hours', now() - interval '1000 hours')
     SQL
 
-    old_count = conn.exec("SELECT count(*) AS n FROM smgr_stats.history WHERE relnumber = 88888")
+    old_count = stats_conn.exec("SELECT count(*) AS n FROM smgr_stats.history WHERE relnumber = 88888")
     expect(old_count[0]["n"].to_i).to eq(1)
 
     # Wait for collection cycles
     sleep 5
 
     # Old entry should still exist (retention disabled)
-    old_count_after = conn.exec("SELECT count(*) AS n FROM smgr_stats.history WHERE relnumber = 88888")
+    old_count_after = stats_conn.exec("SELECT count(*) AS n FROM smgr_stats.history WHERE relnumber = 88888")
     expect(old_count_after[0]["n"].to_i).to eq(1)
   end
 end

@@ -65,13 +65,16 @@ static inline void timing_to_datum(const SmgrStatsTimingHist* h, Datum* values, 
   }
 }
 
-static void resolve_snapshot_metadata(SmgrStatsEntry* entries, int count) {
+/*
+ * Resolve metadata for temp aggregate entries in the snapshot.
+ * Regular entries have their metadata resolved by hooks (ExecutorEnd, ProcessUtility, shmem_exit).
+ * Temp aggregates are skipped by hooks since they use synthetic metadata that doesn't require syscache.
+ */
+static void resolve_temp_aggregate_metadata(SmgrStatsEntry* entries, int count) {
   for (int i = 0; i < count; i++) {
     SmgrStatsEntry* e = &entries[i];
-    const bool needs_resolve = !e->meta.metadata_valid;
-    const bool can_resolve = (e->key.locator.dbOid == MyDatabaseId) || (e->key.locator.dbOid == 0);
-    if (needs_resolve && can_resolve) {
-      smgr_stats_resolve_metadata(e, &e->key);
+    if (!e->meta.metadata_valid && smgr_stats_is_temp_aggregate_key(&e->key)) {
+      smgr_stats_lookup_metadata(&e->key, &e->meta);
     }
   }
 }
@@ -90,7 +93,7 @@ Datum smgr_stats_current(PG_FUNCTION_ARGS) {
     int count;
     ctx->entries = smgr_stats_snapshot(&count, &ctx->bucket_id);
     ctx->collected_at = GetCurrentTimestamp();
-    resolve_snapshot_metadata(ctx->entries, count);
+    resolve_temp_aggregate_metadata(ctx->entries, count);
 
     funcctx->user_fctx = ctx;
     funcctx->max_calls = count;

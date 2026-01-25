@@ -7,37 +7,40 @@ RSpec.describe "pg_smgrstat shutdown flush",
     conn.exec("INSERT INTO test_flush SELECT g, repeat('x', 1000) FROM generate_series(1, 2000) g")
     conn.exec("CHECKPOINT")
 
-    pg.evict_buffers
+    pg.evict_buffers(dbname: TEST_DATABASE)
     conn.exec("SELECT count(*) FROM test_flush")
+
+    relfilenode = lookup_relfilenode(conn, "test_flush")
 
     # Verify stats are in shared memory but NOT yet in history
     # (collection_interval is 3600s so no periodic collection has fired)
-    current = conn.exec(<<~SQL)
+    current = stats_conn.exec(<<~SQL)
       SELECT reads, read_blocks, writes, write_blocks,
              sequential_reads, random_reads
       FROM smgr_stats.current() c
-      WHERE c.relnumber = (SELECT relfilenode FROM pg_class WHERE relname = 'test_flush')
+      WHERE c.relnumber = #{relfilenode}
         AND c.forknum = 0
     SQL
     expect(current.ntuples).to eq(1)
     expect(current[0]["reads"].to_i).to be > 0
 
-    history_before = conn.exec("SELECT count(*) AS n FROM smgr_stats.history")
+    history_before = stats_conn.exec("SELECT count(*) AS n FROM smgr_stats.history")
     expect(history_before[0]["n"].to_i).to eq(0)
 
     @conn = nil
+    @stats_conn = nil
 
     # Restart: stop sends SIGTERM to worker which triggers final collection,
     # then start brings the server back up.
     pg.restart
 
-    new_conn = pg.connect
+    new_conn = pg.connect(dbname: "postgres")
     begin
       history = new_conn.exec(<<~SQL)
         SELECT reads, read_blocks, writes, write_blocks,
                sequential_reads, random_reads
         FROM smgr_stats.history
-        WHERE relnumber = (SELECT relfilenode FROM pg_class WHERE relname = 'test_flush')
+        WHERE relnumber = #{relfilenode}
           AND forknum = 0
       SQL
       expect(history.ntuples).to be >= 1

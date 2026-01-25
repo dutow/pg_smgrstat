@@ -2,6 +2,21 @@ require "socket"
 require_relative "support/pg_instance"
 
 PG_CONFIG = ENV.fetch("PG_CONFIG", "pg_config")
+TEST_DATABASE = "testdb"
+
+module CrossDbHelpers
+  def lookup_relfilenode(conn, table_name)
+    conn.exec("SELECT relfilenode FROM pg_class WHERE relname = $1", [table_name])[0]["relfilenode"]
+  end
+
+  def lookup_table_oid(conn, table_name)
+    conn.exec("SELECT oid FROM pg_class WHERE relname = $1", [table_name])[0]["oid"]
+  end
+
+  def test_db_oid(conn)
+    conn.exec("SELECT oid FROM pg_database WHERE datname = current_database()")[0]["oid"]
+  end
+end
 
 RSpec.configure do |config|
   config.expect_with :rspec do |expectations|
@@ -13,11 +28,16 @@ RSpec.configure do |config|
   end
 
   config.shared_context_metadata_behavior = :apply_to_host_groups
+  config.include CrossDbHelpers
 end
 
 # Shared context providing a running PG instance with the extension loaded.
 # Set metadata `extra_config:` on the describe block to add/override postgresql.conf settings.
 # Default config includes smgr_chain and smgr_stats.database.
+#
+# Two connections are provided:
+# - conn: connects to TEST_DATABASE where test tables are created
+# - stats_conn: connects to postgres where smgr_stats extension/history lives
 RSpec.shared_context "pg instance" do
   before(:all) do
     base_config = {
@@ -32,11 +52,12 @@ RSpec.shared_context "pg instance" do
       extra_config: base_config.merge(extra)
     )
     @pg.start
+    @pg.create_database(TEST_DATABASE)
     wait_for_extension
   end
 
   def wait_for_extension(timeout: 10)
-    @pg.connect do |c|
+    @pg.connect(dbname: "postgres") do |c|
       deadline = Time.now + timeout
       loop do
         result = c.exec("SELECT 1 FROM pg_extension WHERE extname = 'pg_smgrstat'")
@@ -53,7 +74,14 @@ RSpec.shared_context "pg instance" do
 
   let(:pg) { @pg }
 
-  # Opens a fresh connection for each test
-  let(:conn) { @conn = pg.connect }
-  after { @conn&.close }
+  # Opens a fresh connection to test database for each test (for table creation/DML)
+  let(:conn) { @conn = pg.connect(dbname: TEST_DATABASE) }
+
+  # Opens a fresh connection to postgres database for each test (for stats queries)
+  let(:stats_conn) { @stats_conn = pg.connect(dbname: "postgres") }
+
+  after do
+    @conn&.close
+    @stats_conn&.close
+  end
 end

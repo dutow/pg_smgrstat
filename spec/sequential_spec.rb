@@ -1,12 +1,13 @@
 RSpec.describe "pg_smgrstat sequential detection" do
   include_context "pg instance"
 
-  def seq_stats_for(conn, table_name)
-    conn.exec(<<~SQL)
+  def seq_stats_for(table_name)
+    rfn = lookup_relfilenode(conn, table_name)
+    stats_conn.exec(<<~SQL)
       SELECT sequential_reads, random_reads,
              read_run_mean, read_run_cov, read_run_count
       FROM smgr_stats.current() c
-      WHERE c.relnumber = (SELECT relfilenode FROM pg_class WHERE relname = '#{table_name}')
+      WHERE c.relnumber = #{rfn}
         AND c.forknum = 0
     SQL
   end
@@ -17,10 +18,10 @@ RSpec.describe "pg_smgrstat sequential detection" do
       conn.exec("INSERT INTO test_seq_full SELECT g, repeat('x', 1000) FROM generate_series(1, 2000) g")
       conn.exec("CHECKPOINT")
 
-      pg.evict_buffers
+      pg.evict_buffers(dbname: TEST_DATABASE)
       conn.exec("SELECT count(*) FROM test_seq_full")
 
-      result = seq_stats_for(conn, "test_seq_full")
+      result = seq_stats_for("test_seq_full")
       expect(result.ntuples).to eq(1)
       seq = result[0]["sequential_reads"].to_i
       rnd = result[0]["random_reads"].to_i
@@ -37,13 +38,13 @@ RSpec.describe "pg_smgrstat sequential detection" do
       conn.exec("INSERT INTO test_seq_random SELECT g, repeat('x', 1000) FROM generate_series(1, 2000) g")
       conn.exec("CHECKPOINT")
 
-      pg.evict_buffers
+      pg.evict_buffers(dbname: TEST_DATABASE)
       # Read individual non-contiguous blocks via TID scan
       [10, 5, 20, 2, 15].each do |blk|
         conn.exec("SELECT * FROM test_seq_random WHERE ctid >= '(#{blk},0)' AND ctid < '(#{blk + 1},0)'")
       end
 
-      result = seq_stats_for(conn, "test_seq_random")
+      result = seq_stats_for("test_seq_random")
       expect(result.ntuples).to eq(1)
       rnd = result[0]["random_reads"].to_i
       seq = result[0]["sequential_reads"].to_i
@@ -57,16 +58,16 @@ RSpec.describe "pg_smgrstat sequential detection" do
       conn.exec("INSERT INTO test_seq_mixed SELECT g, repeat('x', 1000) FROM generate_series(1, 2000) g")
       conn.exec("CHECKPOINT")
 
-      pg.evict_buffers
+      pg.evict_buffers(dbname: TEST_DATABASE)
       # First: sequential scan
       conn.exec("SELECT count(*) FROM test_seq_mixed")
       # Then: random single-block reads (breaks the sequential streak)
-      pg.evict_buffers
+      pg.evict_buffers(dbname: TEST_DATABASE)
       [50, 10, 30].each do |blk|
         conn.exec("SELECT * FROM test_seq_mixed WHERE ctid >= '(#{blk},0)' AND ctid < '(#{blk + 1},0)'")
       end
 
-      result = seq_stats_for(conn, "test_seq_mixed")
+      result = seq_stats_for("test_seq_mixed")
       expect(result.ntuples).to eq(1)
       seq = result[0]["sequential_reads"].to_i
       rnd = result[0]["random_reads"].to_i
@@ -84,10 +85,10 @@ RSpec.describe "pg_smgrstat sequential detection" do
       conn.exec("INSERT INTO test_run_null SELECT g, repeat('x', 1000) FROM generate_series(1, 500) g")
       conn.exec("CHECKPOINT")
 
-      pg.evict_buffers
+      pg.evict_buffers(dbname: TEST_DATABASE)
       conn.exec("SELECT count(*) FROM test_run_null")
 
-      result = seq_stats_for(conn, "test_run_null")
+      result = seq_stats_for("test_run_null")
       expect(result.ntuples).to eq(1)
       # A single sequential scan produces at most one run (flushed at exit),
       # so mean/cov should be NULL
@@ -102,11 +103,11 @@ RSpec.describe "pg_smgrstat sequential detection" do
 
       # Multiple sequential scans; each new scan breaks the previous streak
       4.times do
-        pg.evict_buffers
+        pg.evict_buffers(dbname: TEST_DATABASE)
         conn.exec("SELECT count(*) FROM test_run_count")
       end
 
-      result = seq_stats_for(conn, "test_run_count")
+      result = seq_stats_for("test_run_count")
       expect(result.ntuples).to eq(1)
       run_count = result[0]["read_run_count"].to_i
       # Each scan after the first breaks the previous streak, recording it.
@@ -122,11 +123,11 @@ RSpec.describe "pg_smgrstat sequential detection" do
       # Three sequential scans; each new scan breaks the previous streak.
       # This produces at least 2 completed runs (needed for mean/cov).
       3.times do
-        pg.evict_buffers
+        pg.evict_buffers(dbname: TEST_DATABASE)
         conn.exec("SELECT count(*) FROM test_run_long")
       end
 
-      result = seq_stats_for(conn, "test_run_long")
+      result = seq_stats_for("test_run_long")
       expect(result.ntuples).to eq(1)
       expect(result[0]["read_run_mean"]).not_to be_nil
       mean = result[0]["read_run_mean"].to_f
@@ -140,13 +141,13 @@ RSpec.describe "pg_smgrstat sequential detection" do
       conn.exec("INSERT INTO test_run_short SELECT g, repeat('x', 1000) FROM generate_series(1, 2000) g")
       conn.exec("CHECKPOINT")
 
-      pg.evict_buffers
+      pg.evict_buffers(dbname: TEST_DATABASE)
       # Read single non-contiguous blocks; each breaks the previous "run" of length 1
       [10, 5, 20, 2, 15, 8, 25, 3].each do |blk|
         conn.exec("SELECT * FROM test_run_short WHERE ctid >= '(#{blk},0)' AND ctid < '(#{blk + 1},0)'")
       end
 
-      result = seq_stats_for(conn, "test_run_short")
+      result = seq_stats_for("test_run_short")
       expect(result.ntuples).to eq(1)
       expect(result[0]["read_run_count"].to_i).to be >= 2
       mean = result[0]["read_run_mean"].to_f
@@ -161,13 +162,13 @@ RSpec.describe "pg_smgrstat sequential detection" do
       conn.exec("CHECKPOINT")
 
       # Do a sequential scan in a separate connection, then close it
-      flush_conn = pg.connect
-      pg.evict_buffers
+      flush_conn = pg.connect(dbname: TEST_DATABASE)
+      pg.evict_buffers(dbname: TEST_DATABASE)
       flush_conn.exec("SELECT count(*) FROM test_run_flush")
       flush_conn.close
 
       # The backend exit should have flushed the in-progress run
-      result = seq_stats_for(conn, "test_run_flush")
+      result = seq_stats_for("test_run_flush")
       expect(result.ntuples).to eq(1)
       run_count = result[0]["read_run_count"].to_i
       expect(run_count).to be >= 1
