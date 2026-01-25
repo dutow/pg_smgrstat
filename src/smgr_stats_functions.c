@@ -2,9 +2,13 @@
 
 #include "access/htup_details.h"
 #include "funcapi.h"
+#include "miscadmin.h"
+#include "utils/builtins.h"
 #include "utils/timestamp.h"
 
 #include "smgr_stats_store.h"
+
+#define CURRENT_NUM_COLUMNS 46
 
 typedef struct SmgrStatsCurrentCtx {
   SmgrStatsEntry* entries;
@@ -36,51 +40,73 @@ Datum smgr_stats_current(PG_FUNCTION_ARGS) {
     int count;
     ctx->entries = smgr_stats_snapshot(&count, &ctx->bucket_id);
     ctx->collected_at = GetCurrentTimestamp();
+
+    /*
+     * Resolve metadata for entries that don't have it yet.
+     * We can resolve metadata for entries belonging to our database or global/shared
+     * catalogs (dbOid=0). This is safe since we're in a SQL function context with
+     * valid transaction state.
+     */
+    for (int i = 0; i < count; i++) {
+      SmgrStatsEntry* e = &ctx->entries[i];
+      if (!e->meta.metadata_valid &&
+          (e->key.locator.dbOid == MyDatabaseId || e->key.locator.dbOid == 0)) {
+        smgr_stats_resolve_metadata(e, &e->key);
+      }
+    }
+
     funcctx->user_fctx = ctx;
     funcctx->max_calls = count;
 
-    TupleDesc tupdesc = CreateTemplateTupleDesc(41);
+    TupleDesc tupdesc = CreateTemplateTupleDesc(CURRENT_NUM_COLUMNS);
     TupleDescInitEntry(tupdesc, 1, "bucket_id", INT8OID, -1, 0);
     TupleDescInitEntry(tupdesc, 2, "collected_at", TIMESTAMPTZOID, -1, 0);
     TupleDescInitEntry(tupdesc, 3, "spcoid", OIDOID, -1, 0);
     TupleDescInitEntry(tupdesc, 4, "dboid", OIDOID, -1, 0);
     TupleDescInitEntry(tupdesc, 5, "relnumber", OIDOID, -1, 0);
     TupleDescInitEntry(tupdesc, 6, "forknum", INT2OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 7, "reads", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 8, "read_blocks", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 9, "writes", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 10, "write_blocks", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 11, "extends", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 12, "extend_blocks", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 13, "truncates", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 14, "fsyncs", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 15, "read_hist", INT8ARRAYOID, -1, 0);
-    TupleDescInitEntry(tupdesc, 16, "read_count", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 17, "read_total_us", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 18, "read_min_us", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 19, "read_max_us", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 20, "write_hist", INT8ARRAYOID, -1, 0);
-    TupleDescInitEntry(tupdesc, 21, "write_count", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 22, "write_total_us", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 23, "write_min_us", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 24, "write_max_us", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 25, "read_iat_mean_us", FLOAT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 26, "read_iat_cov", FLOAT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 27, "write_iat_mean_us", FLOAT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 28, "write_iat_cov", FLOAT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 29, "sequential_reads", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 30, "random_reads", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 31, "sequential_writes", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 32, "random_writes", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 33, "read_run_mean", FLOAT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 34, "read_run_cov", FLOAT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 35, "read_run_count", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 36, "write_run_mean", FLOAT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 37, "write_run_cov", FLOAT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 38, "write_run_count", INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 39, "active_seconds", INT4OID, -1, 0);
-    TupleDescInitEntry(tupdesc, 40, "first_access", TIMESTAMPTZOID, -1, 0);
-    TupleDescInitEntry(tupdesc, 41, "last_access", TIMESTAMPTZOID, -1, 0);
+    /* Metadata columns */
+    TupleDescInitEntry(tupdesc, 7, "reloid", OIDOID, -1, 0);
+    TupleDescInitEntry(tupdesc, 8, "main_reloid", OIDOID, -1, 0);
+    TupleDescInitEntry(tupdesc, 9, "relname", NAMEOID, -1, 0);
+    TupleDescInitEntry(tupdesc, 10, "nspname", NAMEOID, -1, 0);
+    TupleDescInitEntry(tupdesc, 11, "relkind", CHAROID, -1, 0);
+    /* Stats columns */
+    TupleDescInitEntry(tupdesc, 12, "reads", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 13, "read_blocks", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 14, "writes", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 15, "write_blocks", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 16, "extends", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 17, "extend_blocks", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 18, "truncates", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 19, "fsyncs", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 20, "read_hist", INT8ARRAYOID, -1, 0);
+    TupleDescInitEntry(tupdesc, 21, "read_count", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 22, "read_total_us", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 23, "read_min_us", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 24, "read_max_us", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 25, "write_hist", INT8ARRAYOID, -1, 0);
+    TupleDescInitEntry(tupdesc, 26, "write_count", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 27, "write_total_us", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 28, "write_min_us", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 29, "write_max_us", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 30, "read_iat_mean_us", FLOAT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 31, "read_iat_cov", FLOAT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 32, "write_iat_mean_us", FLOAT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 33, "write_iat_cov", FLOAT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 34, "sequential_reads", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 35, "random_reads", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 36, "sequential_writes", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 37, "random_writes", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 38, "read_run_mean", FLOAT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 39, "read_run_cov", FLOAT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 40, "read_run_count", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 41, "write_run_mean", FLOAT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 42, "write_run_cov", FLOAT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 43, "write_run_count", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 44, "active_seconds", INT4OID, -1, 0);
+    TupleDescInitEntry(tupdesc, 45, "first_access", TIMESTAMPTZOID, -1, 0);
+    TupleDescInitEntry(tupdesc, 46, "last_access", TIMESTAMPTZOID, -1, 0);
     funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
     MemoryContextSwitchTo(oldctx);
@@ -91,8 +117,8 @@ Datum smgr_stats_current(PG_FUNCTION_ARGS) {
 
   if (funcctx->call_cntr < funcctx->max_calls) {
     SmgrStatsEntry* e = &ctx->entries[funcctx->call_cntr];
-    Datum values[41];
-    bool nulls[41] = {false};
+    Datum values[CURRENT_NUM_COLUMNS];
+    bool nulls[CURRENT_NUM_COLUMNS] = {false};
 
     values[0] = Int64GetDatum(ctx->bucket_id);
     values[1] = TimestampTzGetDatum(ctx->collected_at);
@@ -100,35 +126,50 @@ Datum smgr_stats_current(PG_FUNCTION_ARGS) {
     values[3] = ObjectIdGetDatum(e->key.locator.dbOid);
     values[4] = ObjectIdGetDatum(e->key.locator.relNumber);
     values[5] = Int16GetDatum((int16)e->key.forknum);
-    values[6] = UInt64GetDatum(e->reads);
-    values[7] = UInt64GetDatum(e->read_blocks);
-    values[8] = UInt64GetDatum(e->writes);
-    values[9] = UInt64GetDatum(e->write_blocks);
-    values[10] = UInt64GetDatum(e->extends);
-    values[11] = UInt64GetDatum(e->extend_blocks);
-    values[12] = UInt64GetDatum(e->truncates);
-    values[13] = UInt64GetDatum(e->fsyncs);
 
-    if (e->read_timing.count > 0) {
-      values[14] = smgr_stats_hist_to_array_datum(&e->read_timing);
-      values[15] = Int64GetDatum((int64)e->read_timing.count);
-      values[16] = Int64GetDatum((int64)e->read_timing.total_us);
-      values[17] = Int64GetDatum((int64)e->read_timing.min_us);
-      values[18] = Int64GetDatum((int64)e->read_timing.max_us);
+    /* Metadata columns */
+    if (OidIsValid(e->meta.reloid)) {
+      values[6] = ObjectIdGetDatum(e->meta.reloid);
     } else {
-      nulls[14] = true;
-      nulls[15] = true;
-      nulls[16] = true;
-      nulls[17] = true;
-      nulls[18] = true;
+      nulls[6] = true;
+    }
+    if (OidIsValid(e->meta.main_reloid)) {
+      values[7] = ObjectIdGetDatum(e->meta.main_reloid);
+    } else {
+      nulls[7] = true;
+    }
+    if (e->meta.relname.data[0] != '\0') {
+      values[8] = NameGetDatum(&e->meta.relname);
+    } else {
+      nulls[8] = true;
+    }
+    if (e->meta.nspname.data[0] != '\0') {
+      values[9] = NameGetDatum(&e->meta.nspname);
+    } else {
+      nulls[9] = true;
+    }
+    if (e->meta.relkind != '\0') {
+      values[10] = CharGetDatum(e->meta.relkind);
+    } else {
+      nulls[10] = true;
     }
 
-    if (e->write_timing.count > 0) {
-      values[19] = smgr_stats_hist_to_array_datum(&e->write_timing);
-      values[20] = Int64GetDatum((int64)e->write_timing.count);
-      values[21] = Int64GetDatum((int64)e->write_timing.total_us);
-      values[22] = Int64GetDatum((int64)e->write_timing.min_us);
-      values[23] = Int64GetDatum((int64)e->write_timing.max_us);
+    /* Stats columns */
+    values[11] = UInt64GetDatum(e->reads);
+    values[12] = UInt64GetDatum(e->read_blocks);
+    values[13] = UInt64GetDatum(e->writes);
+    values[14] = UInt64GetDatum(e->write_blocks);
+    values[15] = UInt64GetDatum(e->extends);
+    values[16] = UInt64GetDatum(e->extend_blocks);
+    values[17] = UInt64GetDatum(e->truncates);
+    values[18] = UInt64GetDatum(e->fsyncs);
+
+    if (e->read_timing.count > 0) {
+      values[19] = smgr_stats_hist_to_array_datum(&e->read_timing);
+      values[20] = Int64GetDatum((int64)e->read_timing.count);
+      values[21] = Int64GetDatum((int64)e->read_timing.total_us);
+      values[22] = Int64GetDatum((int64)e->read_timing.min_us);
+      values[23] = Int64GetDatum((int64)e->read_timing.max_us);
     } else {
       nulls[19] = true;
       nulls[20] = true;
@@ -137,22 +178,36 @@ Datum smgr_stats_current(PG_FUNCTION_ARGS) {
       nulls[23] = true;
     }
 
-    welford_to_datum(&e->read_burst.iat, values, nulls, 24);
-    welford_to_datum(&e->write_burst.iat, values, nulls, 26);
+    if (e->write_timing.count > 0) {
+      values[24] = smgr_stats_hist_to_array_datum(&e->write_timing);
+      values[25] = Int64GetDatum((int64)e->write_timing.count);
+      values[26] = Int64GetDatum((int64)e->write_timing.total_us);
+      values[27] = Int64GetDatum((int64)e->write_timing.min_us);
+      values[28] = Int64GetDatum((int64)e->write_timing.max_us);
+    } else {
+      nulls[24] = true;
+      nulls[25] = true;
+      nulls[26] = true;
+      nulls[27] = true;
+      nulls[28] = true;
+    }
 
-    values[28] = UInt64GetDatum(e->sequential_reads);
-    values[29] = UInt64GetDatum(e->random_reads);
-    values[30] = UInt64GetDatum(e->sequential_writes);
-    values[31] = UInt64GetDatum(e->random_writes);
+    welford_to_datum(&e->read_burst.iat, values, nulls, 29);
+    welford_to_datum(&e->write_burst.iat, values, nulls, 31);
 
-    welford_to_datum(&e->read_runs, values, nulls, 32);
-    values[34] = Int64GetDatum((int64)e->read_runs.count);
-    welford_to_datum(&e->write_runs, values, nulls, 35);
-    values[37] = Int64GetDatum((int64)e->write_runs.count);
+    values[33] = UInt64GetDatum(e->sequential_reads);
+    values[34] = UInt64GetDatum(e->random_reads);
+    values[35] = UInt64GetDatum(e->sequential_writes);
+    values[36] = UInt64GetDatum(e->random_writes);
 
-    values[38] = Int32GetDatum((int32)e->active_seconds);
-    values[39] = TimestampTzGetDatum(e->first_access);
-    values[40] = TimestampTzGetDatum(e->last_access);
+    welford_to_datum(&e->read_runs, values, nulls, 37);
+    values[39] = Int64GetDatum((int64)e->read_runs.count);
+    welford_to_datum(&e->write_runs, values, nulls, 40);
+    values[42] = Int64GetDatum((int64)e->write_runs.count);
+
+    values[43] = Int32GetDatum((int32)e->active_seconds);
+    values[44] = TimestampTzGetDatum(e->first_access);
+    values[45] = TimestampTzGetDatum(e->last_access);
 
     HeapTuple tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
     SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));

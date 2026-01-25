@@ -45,6 +45,22 @@ static void welford_to_query(StringInfo query, const SmgrStatsWelford* w) {
   }
 }
 
+static void append_name_or_null(StringInfo query, const NameData* name) {
+  if (name->data[0] != '\0') {
+    appendStringInfo(query, "'%s'", NameStr(*name));
+  } else {
+    appendStringInfoString(query, "NULL");
+  }
+}
+
+static void append_oid_or_null(StringInfo query, Oid oid) {
+  if (OidIsValid(oid)) {
+    appendStringInfo(query, "%u", oid);
+  } else {
+    appendStringInfoString(query, "NULL");
+  }
+}
+
 static void smgr_stats_collect_and_insert(void) {
   int count = 0;
   int64 bucket_id;
@@ -60,6 +76,19 @@ static void smgr_stats_collect_and_insert(void) {
   SPI_connect();
   PushActiveSnapshot(GetTransactionSnapshot());
 
+  /*
+   * Resolve metadata for entries that don't have it yet.
+   * We can resolve metadata for entries belonging to our database or global/shared
+   * catalogs (dbOid=0).
+   */
+  for (int i = 0; i < count; i++) {
+    SmgrStatsEntry* e = &snapshot[i];
+    if (!e->meta.metadata_valid &&
+        (e->key.locator.dbOid == MyDatabaseId || e->key.locator.dbOid == 0)) {
+      smgr_stats_resolve_metadata(e, &e->key);
+    }
+  }
+
   PG_TRY();
   {
     for (int i = 0; i < count; i++) {
@@ -70,6 +99,7 @@ static void smgr_stats_collect_and_insert(void) {
       appendStringInfo(&query,
                        "INSERT INTO smgr_stats.history "
                        "(bucket_id, spcoid, dboid, relnumber, forknum,"
+                       " reloid, main_reloid, relname, nspname, relkind,"
                        " reads, read_blocks, writes, write_blocks,"
                        " extends, extend_blocks, truncates, fsyncs,"
                        " read_hist, read_count, read_total_us, read_min_us, read_max_us,"
@@ -79,13 +109,32 @@ static void smgr_stats_collect_and_insert(void) {
                        " read_run_mean, read_run_cov, read_run_count,"
                        " write_run_mean, write_run_cov, write_run_count,"
                        " active_seconds, first_access, last_access) "
-                       "VALUES (%ld, %u, %u, %u, %d,"
-                       " %lu, %lu, %lu, %lu,"
-                       " %lu, %lu, %lu, %lu, ",
+                       "VALUES (%ld, %u, %u, %u, %d, ",
                        (long)bucket_id, e->key.locator.spcOid, e->key.locator.dbOid, e->key.locator.relNumber,
-                       (int)e->key.forknum, (unsigned long)e->reads, (unsigned long)e->read_blocks,
-                       (unsigned long)e->writes, (unsigned long)e->write_blocks, (unsigned long)e->extends,
-                       (unsigned long)e->extend_blocks, (unsigned long)e->truncates, (unsigned long)e->fsyncs);
+                       (int)e->key.forknum);
+
+      /* Metadata columns */
+      append_oid_or_null(&query, e->meta.reloid);
+      appendStringInfoString(&query, ", ");
+      append_oid_or_null(&query, e->meta.main_reloid);
+      appendStringInfoString(&query, ", ");
+      append_name_or_null(&query, &e->meta.relname);
+      appendStringInfoString(&query, ", ");
+      append_name_or_null(&query, &e->meta.nspname);
+      appendStringInfoString(&query, ", ");
+      if (e->meta.relkind != '\0') {
+        appendStringInfo(&query, "'%c'", e->meta.relkind);
+      } else {
+        appendStringInfoString(&query, "NULL");
+      }
+
+      /* Stats columns */
+      appendStringInfo(&query,
+                       ", %lu, %lu, %lu, %lu,"
+                       " %lu, %lu, %lu, %lu, ",
+                       (unsigned long)e->reads, (unsigned long)e->read_blocks, (unsigned long)e->writes,
+                       (unsigned long)e->write_blocks, (unsigned long)e->extends, (unsigned long)e->extend_blocks,
+                       (unsigned long)e->truncates, (unsigned long)e->fsyncs);
 
       if (e->read_timing.count > 0) {
         appendStringInfoString(&query, "ARRAY[");
@@ -146,6 +195,62 @@ static void smgr_stats_collect_and_insert(void) {
   PG_END_TRY();
 
   pfree(snapshot);
+}
+
+static void smgr_stats_insert_relfile_history(void) {
+  int count = 0;
+  SmgrStatsRelfileAssoc* assocs = smgr_stats_drain_relfile_queue(&count);
+
+  if (count == 0) {
+    return;
+  }
+
+  SetCurrentStatementStartTimestamp();
+  StartTransactionCommand();
+  SPI_connect();
+  PushActiveSnapshot(GetTransactionSnapshot());
+
+  PG_TRY();
+  {
+    for (int i = 0; i < count; i++) {
+      SmgrStatsRelfileAssoc* a = &assocs[i];
+      StringInfoData query;
+      initStringInfo(&query);
+
+      appendStringInfo(&query,
+                       "INSERT INTO smgr_stats.relfile_history "
+                       "(spcoid, dboid, old_relnumber, new_relnumber, forknum, is_redo, reloid, relname, nspname) "
+                       "VALUES (%u, %u, %u, %u, %d, %s, ",
+                       a->new_locator.spcOid, a->new_locator.dbOid, a->old_locator.relNumber, a->new_locator.relNumber,
+                       (int)a->forknum, a->is_redo ? "true" : "false");
+
+      append_oid_or_null(&query, a->reloid);
+      appendStringInfoString(&query, ", ");
+      append_name_or_null(&query, &a->relname);
+      appendStringInfoString(&query, ", ");
+      append_name_or_null(&query, &a->nspname);
+      appendStringInfoChar(&query, ')');
+
+      SPI_execute(query.data, false, 0);
+      pfree(query.data);
+    }
+
+    PopActiveSnapshot();
+    CommitTransactionCommand();
+  }
+  PG_FINALLY();
+  {
+    SPI_finish();
+  }
+  PG_END_TRY();
+
+  pfree(assocs);
+}
+
+static void smgr_stats_collect_cycle(void) {
+  pgstat_report_activity(STATE_RUNNING, "collecting smgr stats");
+  smgr_stats_collect_and_insert();
+  smgr_stats_insert_relfile_history();
   pgstat_report_activity(STATE_IDLE, NULL);
 }
 
@@ -193,14 +298,12 @@ void smgr_stats_worker_main(Datum main_arg) {
 
     /* On timeout, collect stats */
     if (rc & WL_TIMEOUT) {
-      pgstat_report_activity(STATE_RUNNING, "collecting smgr stats");
-      smgr_stats_collect_and_insert();
+      smgr_stats_collect_cycle();
     }
   }
 
   /* Final collection: capture any stats flushed by exiting backends */
-  pgstat_report_activity(STATE_RUNNING, "final smgr stats collection");
-  smgr_stats_collect_and_insert();
+  smgr_stats_collect_cycle();
 
   proc_exit(0);
 }

@@ -5,6 +5,7 @@
 
 #include "smgr_stats_guc.h"
 #include "smgr_stats_link.h"
+#include "smgr_stats_metadata.h"
 #include "smgr_stats_worker.h"
 
 PG_MODULE_MAGIC;
@@ -16,6 +17,7 @@ void _PG_init(void) {
 
   smgr_stats_register_gucs();
   smgr_stats_register_link();
+  smgr_stats_register_metadata_hooks();
   smgr_stats_register_worker();
 
   elog(LOG, "pg_smgrstat: loaded");

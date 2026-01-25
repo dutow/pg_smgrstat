@@ -10,6 +10,16 @@
 #include "smgr_stats_hist.h"
 #include "smgr_stats_welford.h"
 
+/* Metadata captured at entry creation time (from pg_class) */
+typedef struct SmgrStatsEntryMeta {
+  Oid reloid;          /* pg_class.oid - stable identifier */
+  Oid main_reloid;     /* For TOAST/index: the main table's OID */
+  char relkind;        /* 'r'=table, 'i'=index, 't'=toast, etc. */
+  NameData relname;    /* Table/index name (64 bytes) */
+  NameData nspname;    /* Schema name (64 bytes) */
+  bool metadata_valid; /* True if metadata was successfully resolved */
+} SmgrStatsEntryMeta;
+
 /* Sequential run length distribution: Welford on completed streak lengths. */
 typedef SmgrStatsWelford SmgrStatsRunDist;
 
@@ -26,6 +36,9 @@ typedef struct SmgrStatsKey {
 
 typedef struct SmgrStatsEntry {
   SmgrStatsKey key; /* Must be first (dshash requirement) */
+
+  /* Metadata from pg_class (captured at entry creation) */
+  SmgrStatsEntryMeta meta;
 
   /* Operation counters */
   uint64 reads;
@@ -83,3 +96,33 @@ extern SmgrStatsEntry* smgr_stats_snapshot(int* count, int64* bucket_id);
  * Returns a palloc'd array of snapshots. Sets *count and *bucket_id
  * (the bucket that was just completed). Advances the bucket counter. */
 extern SmgrStatsEntry* smgr_stats_snapshot_and_reset(int* count, int64* bucket_id);
+
+/* Resolve metadata from pg_class for an entry. Must be called from a backend with
+ * the correct database connection. Returns true if metadata was resolved.
+ * WARNING: This function accesses syscache which may trigger I/O. Do NOT call
+ * while holding a dshash lock - use smgr_stats_lookup_metadata instead. */
+extern bool smgr_stats_resolve_metadata(SmgrStatsEntry* entry, const SmgrStatsKey* key);
+
+/* Lookup metadata from pg_class without modifying any entry. Returns metadata in
+ * the output parameter. Safe to call without holding any locks. Returns true if
+ * metadata was successfully resolved. */
+extern bool smgr_stats_lookup_metadata(const SmgrStatsKey* key, SmgrStatsEntryMeta* meta_out);
+
+/* Relfile association entry (for tracking VACUUM FULL/CLUSTER rewrites) */
+typedef struct SmgrStatsRelfileAssoc {
+  RelFileLocator old_locator;
+  RelFileLocator new_locator;
+  ForkNumber forknum;
+  bool is_redo;
+  /* Metadata resolved at create time */
+  Oid reloid;
+  NameData relname;
+  NameData nspname;
+} SmgrStatsRelfileAssoc;
+
+/* Queue a relfile association for the background worker to persist. */
+extern void smgr_stats_queue_relfile_assoc(const RelFileLocator* old_locator, const RelFileLocator* new_locator,
+                                           ForkNumber forknum, bool is_redo);
+
+/* Drain the relfile association queue. Returns a palloc'd array and sets *count. */
+extern SmgrStatsRelfileAssoc* smgr_stats_drain_relfile_queue(int* count);

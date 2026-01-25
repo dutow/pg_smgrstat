@@ -8,6 +8,7 @@
 #include "utils/memutils.h"
 
 #include "smgr_stats_link.h"
+#include "smgr_stats_metadata.h"
 #include "smgr_stats_seq.h"
 #include "smgr_stats_store.h"
 
@@ -40,6 +41,11 @@ typedef struct SmgrStatsAioSlot {
 } SmgrStatsAioSlot;
 
 static SmgrStatsAioSlot* aio_slots = NULL;
+
+/* Recursion guard for metadata resolution (which may trigger smgropen recursively) */
+
+/* Flag to track when we're inside an I/O operation (prevents metadata resolution in smgr_open) */
+static bool in_smgr_stats_io = false;
 
 static PgAioResult smgr_stats_readv_complete(PgAioHandle* ioh, PgAioResult prior_result, uint8 cb_data) {
   (void)cb_data;
@@ -80,7 +86,16 @@ static PgAioResult smgr_stats_readv_complete(PgAioHandle* ioh, PgAioResult prior
     TimestampTz now = GetCurrentTimestamp();
     smgr_stats_record_burstiness(&entry->read_burst, now);
     smgr_stats_update_activity(entry, now);
+
     smgr_stats_release_entry(entry);
+
+    /*
+     * No metadata resolution here - AIO completion may trigger syscache access
+     * which conflicts with AIO constraints. Metadata is resolved by the
+     * background worker when collecting stats.
+     */
+  } else {
+    /* Entry not found - nothing to update */
   }
 
   return prior_result;
@@ -95,7 +110,9 @@ static void smgr_stats_readv(SMgrRelation reln, ForkNumber forknum, BlockNumber 
   instr_time start;
   INSTR_TIME_SET_CURRENT(start);
 
+  in_smgr_stats_io = true;
   smgr_readv_next(reln, forknum, blocknum, buffers, nblocks, chain_index + 1);
+  in_smgr_stats_io = false;
   INJECTION_POINT("smgr-stats-after-readv", NULL);
 
   instr_time end;
@@ -108,6 +125,9 @@ static void smgr_stats_readv(SMgrRelation reln, ForkNumber forknum, BlockNumber 
 
   bool found;
   SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
+  if (!found) {
+    smgr_stats_add_pending_metadata(&key);
+  }
   entry->reads++;
   entry->read_blocks += nblocks;
   if (seq.is_sequential) {
@@ -123,6 +143,11 @@ static void smgr_stats_readv(SMgrRelation reln, ForkNumber forknum, BlockNumber 
   smgr_stats_record_burstiness(&entry->read_burst, now);
   smgr_stats_update_activity(entry, now);
   smgr_stats_release_entry(entry);
+
+  /*
+   * No metadata resolution here - may conflict with AIO or buffer operations.
+   * Metadata is resolved by the background worker when collecting stats.
+   */
 }
 
 static void smgr_stats_startreadv(PgAioHandle* ioh, SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
@@ -131,7 +156,16 @@ static void smgr_stats_startreadv(PgAioHandle* ioh, SMgrRelation reln, ForkNumbe
   SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
   bool found;
   SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
+  if (!found) {
+    smgr_stats_add_pending_metadata(&key);
+  }
   smgr_stats_release_entry(entry);
+
+  /*
+   * No metadata resolution here - accessing syscache triggers catalog I/O which
+   * conflicts with AIO's "one IO at a time" requirement. Metadata is resolved
+   * via ExecutorEnd/ProcessUtility hooks after operations complete.
+   */
 
   /* Lazily allocate per-slot state array */
   if (!aio_slots) {
@@ -152,7 +186,9 @@ static void smgr_stats_writev(SMgrRelation reln, ForkNumber forknum, BlockNumber
   instr_time start;
   INSTR_TIME_SET_CURRENT(start);
 
+  in_smgr_stats_io = true;
   smgr_writev_next(reln, forknum, blocknum, buffers, nblocks, skip_fsync, chain_index + 1);
+  in_smgr_stats_io = false;
   INJECTION_POINT("smgr-stats-after-writev", NULL);
 
   instr_time end;
@@ -165,6 +201,9 @@ static void smgr_stats_writev(SMgrRelation reln, ForkNumber forknum, BlockNumber
 
   bool found;
   SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
+  if (!found) {
+    smgr_stats_add_pending_metadata(&key);
+  }
   entry->writes++;
   entry->write_blocks += nblocks;
   if (seq.is_sequential) {
@@ -189,6 +228,9 @@ static void smgr_stats_extend(SMgrRelation reln, ForkNumber forknum, BlockNumber
   SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
   bool found;
   SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
+  if (!found) {
+    smgr_stats_add_pending_metadata(&key);
+  }
   entry->extends++;
   entry->extend_blocks++;
   smgr_stats_update_activity(entry, GetCurrentTimestamp());
@@ -202,6 +244,9 @@ static void smgr_stats_zeroextend(SMgrRelation reln, ForkNumber forknum, BlockNu
   SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
   bool found;
   SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
+  if (!found) {
+    smgr_stats_add_pending_metadata(&key);
+  }
   entry->extends++;
   entry->extend_blocks += nblocks;
   smgr_stats_update_activity(entry, GetCurrentTimestamp());
@@ -215,6 +260,9 @@ static void smgr_stats_truncate(SMgrRelation reln, ForkNumber forknum, BlockNumb
   SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
   bool found;
   SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
+  if (!found) {
+    smgr_stats_add_pending_metadata(&key);
+  }
   entry->truncates++;
   smgr_stats_update_activity(entry, GetCurrentTimestamp());
   smgr_stats_release_entry(entry);
@@ -226,14 +274,54 @@ static void smgr_stats_immedsync(SMgrRelation reln, ForkNumber forknum, SmgrChai
   SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
   bool found;
   SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
+  if (!found) {
+    smgr_stats_add_pending_metadata(&key);
+  }
   entry->fsyncs++;
   smgr_stats_update_activity(entry, GetCurrentTimestamp());
+  smgr_stats_release_entry(entry);
+}
+
+static void smgr_stats_open(SMgrRelation reln, SmgrChainIndex chain_index) {
+  smgr_open_next(reln, chain_index + 1);
+
+  /* Create entry for main fork. Metadata resolution happens via ExecutorEnd/ProcessUtility hooks. */
+  SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = MAIN_FORKNUM};
+  bool found;
+  SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
+  if (!found) {
+    smgr_stats_add_pending_metadata(&key);
+  }
+  smgr_stats_release_entry(entry);
+}
+
+static void smgr_stats_create(RelFileLocator relold, SMgrRelation reln, ForkNumber forknum, bool is_redo,
+                              SmgrChainIndex chain_index) {
+  smgr_create_next(relold, reln, forknum, is_redo, chain_index + 1);
+
+  /*
+   * Track relfilenode associations for table rewrites (VACUUM FULL, CLUSTER,
+   * TRUNCATE, REINDEX, ALTER TABLE SET TABLESPACE, etc.).
+   */
+  if (relold.relNumber != 0 && relold.relNumber != reln->smgr_rlocator.locator.relNumber) {
+    smgr_stats_queue_relfile_assoc(&relold, &reln->smgr_rlocator.locator, forknum, is_redo);
+  }
+
+  /* Create entry - metadata resolution happens via ExecutorEnd/ProcessUtility hooks */
+  SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
+  bool found;
+  SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
+  if (!found) {
+    smgr_stats_add_pending_metadata(&key);
+  }
   smgr_stats_release_entry(entry);
 }
 
 static const struct f_smgr smgr_stats_smgr = {
     .name = "smgr_stats",
     .chain_position = SMGR_CHAIN_MODIFIER,
+    .smgr_open = smgr_stats_open,
+    .smgr_create = smgr_stats_create,
     .smgr_readv = smgr_stats_readv,
     .smgr_startreadv = smgr_stats_startreadv,
     .smgr_writev = smgr_stats_writev,
