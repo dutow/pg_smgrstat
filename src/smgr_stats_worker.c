@@ -247,10 +247,40 @@ static void smgr_stats_insert_relfile_history(void) {
   pfree(assocs);
 }
 
+static void smgr_stats_run_retention(void) {
+  if (smgr_stats_retention_hours <= 0) {
+    return; /* retention disabled */
+  }
+
+  SetCurrentStatementStartTimestamp();
+  StartTransactionCommand();
+  SPI_connect();
+  PushActiveSnapshot(GetTransactionSnapshot());
+
+  PG_TRY();
+  {
+    StringInfoData query;
+    initStringInfo(&query);
+    appendStringInfo(&query, "DELETE FROM smgr_stats.history WHERE collected_at < now() - interval '%d hours'",
+                     smgr_stats_retention_hours);
+    SPI_execute(query.data, false, 0);
+    pfree(query.data);
+
+    PopActiveSnapshot();
+    CommitTransactionCommand();
+  }
+  PG_FINALLY();
+  {
+    SPI_finish();
+  }
+  PG_END_TRY();
+}
+
 static void smgr_stats_collect_cycle(void) {
   pgstat_report_activity(STATE_RUNNING, "collecting smgr stats");
   smgr_stats_collect_and_insert();
   smgr_stats_insert_relfile_history();
+  smgr_stats_run_retention();
   pgstat_report_activity(STATE_IDLE, NULL);
 }
 

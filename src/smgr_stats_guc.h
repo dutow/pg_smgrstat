@@ -10,5 +10,6 @@ typedef enum SmgrStatsTempTracking {
 extern char* smgr_stats_database;
 extern int smgr_stats_collection_interval;
 extern int smgr_stats_track_temp_tables;
+extern int smgr_stats_retention_hours;
 
 extern void smgr_stats_register_gucs(void);

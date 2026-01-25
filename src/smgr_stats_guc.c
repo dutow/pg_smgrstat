@@ -8,6 +8,7 @@
 char* smgr_stats_database = "postgres";
 int smgr_stats_collection_interval = 60;
 int smgr_stats_track_temp_tables = SMGR_STATS_TEMP_AGGREGATE;
+int smgr_stats_retention_hours = 168; /* 7 days */
 
 static const struct config_enum_entry track_temp_tables_options[] = {{"off", SMGR_STATS_TEMP_OFF, false},
                                                                      {"individual", SMGR_STATS_TEMP_INDIVIDUAL, false},
@@ -25,4 +26,7 @@ void smgr_stats_register_gucs(void) {
                            "How to track temporary table I/O (off, individual, aggregate).", NULL,
                            &smgr_stats_track_temp_tables, SMGR_STATS_TEMP_AGGREGATE, track_temp_tables_options,
                            PGC_SUSET, 0, NULL, NULL, NULL);
+
+  DefineCustomIntVariable("smgr_stats.retention_hours", "Hours to retain history data (0 = forever).", NULL,
+                          &smgr_stats_retention_hours, 168, 0, 87600 /* 10 years */, PGC_SIGHUP, 0, NULL, NULL, NULL);
 }
