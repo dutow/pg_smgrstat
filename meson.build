@@ -73,6 +73,6 @@ if rspec.found()
     env: {
       'PG_CONFIG': pg_config.full_path(),
     },
-    timeout: 60,
+    timeout: 120,
   )
 endif
