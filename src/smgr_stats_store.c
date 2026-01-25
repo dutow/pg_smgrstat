@@ -220,8 +220,8 @@ static Oid lookup_relid_by_relfilenode_direct(Oid spc_oid, RelFileNumber rel_num
 bool smgr_stats_lookup_metadata(const SmgrStatsKey* key, SmgrStatsEntryMeta* meta_out) {
   Oid reloid;
   HeapTuple tuple;
-  Form_pg_class classForm;
-  Form_pg_namespace nspForm;
+  Form_pg_class class_form;
+  Form_pg_namespace nsp_form;
 
   /* Initialize output to invalid state */
   memset(meta_out, 0, sizeof(SmgrStatsEntryMeta));
@@ -294,21 +294,21 @@ bool smgr_stats_lookup_metadata(const SmgrStatsKey* key, SmgrStatsEntryMeta* met
     return false;
   }
 
-  classForm = (Form_pg_class)GETSTRUCT(tuple);
+  class_form = (Form_pg_class)GETSTRUCT(tuple);
   meta_out->reloid = reloid;
-  meta_out->relkind = classForm->relkind;
-  namestrcpy(&meta_out->relname, NameStr(classForm->relname));
+  meta_out->relkind = class_form->relkind;
+  namestrcpy(&meta_out->relname, NameStr(class_form->relname));
 
   /* Look up namespace name */
-  HeapTuple nspTuple = SearchSysCache1(NAMESPACEOID, ObjectIdGetDatum(classForm->relnamespace));
-  if (HeapTupleIsValid(nspTuple)) {
-    nspForm = (Form_pg_namespace)GETSTRUCT(nspTuple);
-    namestrcpy(&meta_out->nspname, NameStr(nspForm->nspname));
-    ReleaseSysCache(nspTuple);
+  HeapTuple nsp_tuple = SearchSysCache1(NAMESPACEOID, ObjectIdGetDatum(class_form->relnamespace));
+  if (HeapTupleIsValid(nsp_tuple)) {
+    nsp_form = (Form_pg_namespace)GETSTRUCT(nsp_tuple);
+    namestrcpy(&meta_out->nspname, NameStr(nsp_form->nspname));
+    ReleaseSysCache(nsp_tuple);
   }
 
   /* For TOAST: find main table */
-  if (classForm->relkind == RELKIND_TOASTVALUE) {
+  if (class_form->relkind == RELKIND_TOASTVALUE) {
     Relation rel = RelationIdGetRelation(reloid);
     if (RelationIsValid(rel)) {
       meta_out->main_reloid = rel->rd_toastoid != InvalidOid ? InvalidOid : reloid;
@@ -316,30 +316,30 @@ bool smgr_stats_lookup_metadata(const SmgrStatsKey* key, SmgrStatsEntryMeta* met
        * The parent is stored in pg_class.reltoastrelid pointing TO this toast table. */
       SysScanDesc scan;
       ScanKeyData skey[1];
-      HeapTuple parentTuple;
+      HeapTuple parent_tuple;
 
       ScanKeyInit(&skey[0], Anum_pg_class_reltoastrelid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(reloid));
 
-      Relation classRel = table_open(RelationRelationId, AccessShareLock);
-      scan = systable_beginscan(classRel, InvalidOid, false, NULL, 1, skey);
-      parentTuple = systable_getnext(scan);
-      if (HeapTupleIsValid(parentTuple)) {
-        Form_pg_class parentForm = (Form_pg_class)GETSTRUCT(parentTuple);
-        meta_out->main_reloid = parentForm->oid;
+      Relation class_rel = table_open(RelationRelationId, AccessShareLock);
+      scan = systable_beginscan(class_rel, InvalidOid, false, NULL, 1, skey);
+      parent_tuple = systable_getnext(scan);
+      if (HeapTupleIsValid(parent_tuple)) {
+        Form_pg_class parent_form = (Form_pg_class)GETSTRUCT(parent_tuple);
+        meta_out->main_reloid = parent_form->oid;
       }
       systable_endscan(scan);
-      table_close(classRel, AccessShareLock);
+      table_close(class_rel, AccessShareLock);
 
       RelationClose(rel);
     }
   }
 
   /* For index: find indexed table */
-  if (classForm->relkind == RELKIND_INDEX || classForm->relkind == RELKIND_PARTITIONED_INDEX) {
-    Relation indexRel = RelationIdGetRelation(reloid);
-    if (RelationIsValid(indexRel)) {
-      meta_out->main_reloid = indexRel->rd_index->indrelid;
-      RelationClose(indexRel);
+  if (class_form->relkind == RELKIND_INDEX || class_form->relkind == RELKIND_PARTITIONED_INDEX) {
+    Relation index_rel = RelationIdGetRelation(reloid);
+    if (RelationIsValid(index_rel)) {
+      meta_out->main_reloid = index_rel->rd_index->indrelid;
+      RelationClose(index_rel);
     }
   }
 

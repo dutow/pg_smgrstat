@@ -28,6 +28,57 @@ static inline void welford_to_datum(const SmgrStatsWelford* w, Datum* values, bo
   }
 }
 
+static inline void set_oid_or_null(Oid oid, Datum* values, bool* nulls, int idx) {
+  if (OidIsValid(oid)) {
+    values[idx] = ObjectIdGetDatum(oid);
+  } else {
+    nulls[idx] = true;
+  }
+}
+
+static inline void set_name_or_null(const NameData* name, Datum* values, bool* nulls, int idx) {
+  if (name->data[0] != '\0') {
+    values[idx] = NameGetDatum(name);
+  } else {
+    nulls[idx] = true;
+  }
+}
+
+static inline void set_char_or_null(char c, Datum* values, bool* nulls, int idx) {
+  if (c != '\0') {
+    values[idx] = CharGetDatum(c);
+  } else {
+    nulls[idx] = true;
+  }
+}
+
+static inline void timing_to_datum(const SmgrStatsTimingHist* h, Datum* values, bool* nulls, int idx) {
+  if (h->count > 0) {
+    values[idx] = smgr_stats_hist_to_array_datum(h);
+    values[idx + 1] = Int64GetDatum((int64)h->count);
+    values[idx + 2] = Int64GetDatum((int64)h->total_us);
+    values[idx + 3] = Int64GetDatum((int64)h->min_us);
+    values[idx + 4] = Int64GetDatum((int64)h->max_us);
+  } else {
+    nulls[idx] = true;
+    nulls[idx + 1] = true;
+    nulls[idx + 2] = true;
+    nulls[idx + 3] = true;
+    nulls[idx + 4] = true;
+  }
+}
+
+static void resolve_snapshot_metadata(SmgrStatsEntry* entries, int count) {
+  for (int i = 0; i < count; i++) {
+    SmgrStatsEntry* e = &entries[i];
+    const bool needs_resolve = !e->meta.metadata_valid;
+    const bool can_resolve = (e->key.locator.dbOid == MyDatabaseId) || (e->key.locator.dbOid == 0);
+    if (needs_resolve && can_resolve) {
+      smgr_stats_resolve_metadata(e, &e->key);
+    }
+  }
+}
+
 PG_FUNCTION_INFO_V1(smgr_stats_current);
 
 Datum smgr_stats_current(PG_FUNCTION_ARGS) {
@@ -42,19 +93,7 @@ Datum smgr_stats_current(PG_FUNCTION_ARGS) {
     int count;
     ctx->entries = smgr_stats_snapshot(&count, &ctx->bucket_id);
     ctx->collected_at = GetCurrentTimestamp();
-
-    /*
-     * Resolve metadata for entries that don't have it yet.
-     * We can resolve metadata for entries belonging to our database or global/shared
-     * catalogs (dbOid=0). This is safe since we're in a SQL function context with
-     * valid transaction state.
-     */
-    for (int i = 0; i < count; i++) {
-      SmgrStatsEntry* e = &ctx->entries[i];
-      if (!e->meta.metadata_valid && (e->key.locator.dbOid == MyDatabaseId || e->key.locator.dbOid == 0)) {
-        smgr_stats_resolve_metadata(e, &e->key);
-      }
-    }
+    resolve_snapshot_metadata(ctx->entries, count);
 
     funcctx->user_fctx = ctx;
     funcctx->max_calls = count;
@@ -129,31 +168,11 @@ Datum smgr_stats_current(PG_FUNCTION_ARGS) {
     values[5] = Int16GetDatum((int16)e->key.forknum);
 
     /* Metadata columns */
-    if (OidIsValid(e->meta.reloid)) {
-      values[6] = ObjectIdGetDatum(e->meta.reloid);
-    } else {
-      nulls[6] = true;
-    }
-    if (OidIsValid(e->meta.main_reloid)) {
-      values[7] = ObjectIdGetDatum(e->meta.main_reloid);
-    } else {
-      nulls[7] = true;
-    }
-    if (e->meta.relname.data[0] != '\0') {
-      values[8] = NameGetDatum(&e->meta.relname);
-    } else {
-      nulls[8] = true;
-    }
-    if (e->meta.nspname.data[0] != '\0') {
-      values[9] = NameGetDatum(&e->meta.nspname);
-    } else {
-      nulls[9] = true;
-    }
-    if (e->meta.relkind != '\0') {
-      values[10] = CharGetDatum(e->meta.relkind);
-    } else {
-      nulls[10] = true;
-    }
+    set_oid_or_null(e->meta.reloid, values, nulls, 6);
+    set_oid_or_null(e->meta.main_reloid, values, nulls, 7);
+    set_name_or_null(&e->meta.relname, values, nulls, 8);
+    set_name_or_null(&e->meta.nspname, values, nulls, 9);
+    set_char_or_null(e->meta.relkind, values, nulls, 10);
 
     /* Stats columns */
     values[11] = UInt64GetDatum(e->reads);
@@ -165,33 +184,8 @@ Datum smgr_stats_current(PG_FUNCTION_ARGS) {
     values[17] = UInt64GetDatum(e->truncates);
     values[18] = UInt64GetDatum(e->fsyncs);
 
-    if (e->read_timing.count > 0) {
-      values[19] = smgr_stats_hist_to_array_datum(&e->read_timing);
-      values[20] = Int64GetDatum((int64)e->read_timing.count);
-      values[21] = Int64GetDatum((int64)e->read_timing.total_us);
-      values[22] = Int64GetDatum((int64)e->read_timing.min_us);
-      values[23] = Int64GetDatum((int64)e->read_timing.max_us);
-    } else {
-      nulls[19] = true;
-      nulls[20] = true;
-      nulls[21] = true;
-      nulls[22] = true;
-      nulls[23] = true;
-    }
-
-    if (e->write_timing.count > 0) {
-      values[24] = smgr_stats_hist_to_array_datum(&e->write_timing);
-      values[25] = Int64GetDatum((int64)e->write_timing.count);
-      values[26] = Int64GetDatum((int64)e->write_timing.total_us);
-      values[27] = Int64GetDatum((int64)e->write_timing.min_us);
-      values[28] = Int64GetDatum((int64)e->write_timing.max_us);
-    } else {
-      nulls[24] = true;
-      nulls[25] = true;
-      nulls[26] = true;
-      nulls[27] = true;
-      nulls[28] = true;
-    }
+    timing_to_datum(&e->read_timing, values, nulls, 19);
+    timing_to_datum(&e->write_timing, values, nulls, 24);
 
     welford_to_datum(&e->read_burst.iat, values, nulls, 29);
     welford_to_datum(&e->write_burst.iat, values, nulls, 31);

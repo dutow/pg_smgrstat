@@ -216,12 +216,13 @@ static void smgr_stats_insert_relfile_history(void) {
       StringInfoData query;
       initStringInfo(&query);
 
+      const char* is_redo_str = a->is_redo ? "true" : "false";  // NOLINT(readability-implicit-bool-conversion)
       appendStringInfo(&query,
                        "INSERT INTO smgr_stats.relfile_history "
                        "(spcoid, dboid, old_relnumber, new_relnumber, forknum, is_redo, reloid, relname, nspname) "
                        "VALUES (%u, %u, %u, %u, %d, %s, ",
                        a->new_locator.spcOid, a->new_locator.dbOid, a->old_locator.relNumber, a->new_locator.relNumber,
-                       (int)a->forknum, a->is_redo ? "true" : "false");
+                       (int)a->forknum, is_redo_str);
 
       append_oid_or_null(&query, a->reloid);
       appendStringInfoString(&query, ", ");
