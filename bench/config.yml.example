@@ -1,0 +1,16 @@
+# Copy this file to bench/config.yml and adjust paths for your environment.
+
+pg_config: "/path/to/the/pg_config"
+build_dir: "build_release"
+build_type: "release"
+
+# default PostgreSQL settings applied to all benchmark instances
+pg_settings:
+  shared_buffers: "16MB"
+  max_connections: 200
+
+# Settings added when the extension is loaded
+extension_settings:
+  smgr_chain: "smgr_stats,md"
+  smgr_stats.database: "postgres"
+  smgr_stats.collection_interval: "60"

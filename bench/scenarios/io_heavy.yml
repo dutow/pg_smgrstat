@@ -1,0 +1,17 @@
+description: "I/O-heavy: small shared_buffers forces more SMGR operations"
+runs: 3
+pg_settings_override:
+  shared_buffers: "32MB"
+workloads:
+  - type: pgbench
+    scale_factor: 100
+    clients: [1, 16]
+    duration: 120
+    warmup: 30
+  - type: sysbench
+    workload: oltp_read_write
+    table_size: 1000000
+    tables: 4
+    threads: [1, 16]
+    duration: 120
+    warmup: 30

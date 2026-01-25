@@ -1,0 +1,11 @@
+description: "Basic IO heavy pgbench overhead test"
+runs: 5
+pg_settings_override:
+  shared_buffers: "16MB"
+workloads:
+  - type: pgbench
+    scale_factor: 100
+    duration: 180
+    clients: [16, 64]
+    duration: 60
+    warmup: 10

@@ -1,2 +1,4 @@
 /build*
 /.cache
+/bench/config.yml
+/bench/results/
