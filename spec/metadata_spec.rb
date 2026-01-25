@@ -309,7 +309,11 @@ RSpec.describe "pg_smgrstat relfile history",
 
     result = conn.exec(<<~SQL)
       SELECT DISTINCT relnumber
-      FROM smgr_stats.get_table_history('test_no_rewrite'::regclass)
+      FROM smgr_stats.get_table_history(
+          (SELECT oid FROM pg_database WHERE datname = current_database()),
+          'public'::name,
+          'test_no_rewrite'::name
+      )
       WHERE forknum = 0
     SQL
 
@@ -336,7 +340,11 @@ RSpec.describe "pg_smgrstat relfile history",
 
     result = conn.exec(<<~SQL)
       SELECT DISTINCT relnumber
-      FROM smgr_stats.get_table_history('test_one_rewrite'::regclass)
+      FROM smgr_stats.get_table_history(
+          (SELECT oid FROM pg_database WHERE datname = current_database()),
+          'public'::name,
+          'test_one_rewrite'::name
+      )
       WHERE forknum = 0
       ORDER BY relnumber
     SQL
@@ -374,11 +382,120 @@ RSpec.describe "pg_smgrstat relfile history",
 
     result = conn.exec(<<~SQL)
       SELECT DISTINCT relnumber
-      FROM smgr_stats.get_table_history('test_multi_rewrite'::regclass)
+      FROM smgr_stats.get_table_history(
+          (SELECT oid FROM pg_database WHERE datname = current_database()),
+          'public'::name,
+          'test_multi_rewrite'::name
+      )
       WHERE forknum = 0
     SQL
 
     # 2 rewrites = lineage contains 3 relfilenodes
+    expect(result.ntuples).to eq(3)
+    expect(result.map { |r| r["relnumber"] }).to contain_exactly(rfn1, rfn2, rfn3)
+  end
+
+  # Tests for the reloid-based variant: get_table_history(db_oid, rel_oid)
+
+  it "get_table_history(db_oid, rel_oid) finds history for a table with no rewrites" do
+    conn.exec("CREATE TABLE test_reloid_no_rewrite (id int, data text)")
+    table_oid = conn.exec(
+      "SELECT oid FROM pg_class WHERE relname = 'test_reloid_no_rewrite'"
+    )[0]["oid"]
+    relfilenode = conn.exec(
+      "SELECT relfilenode FROM pg_class WHERE relname = 'test_reloid_no_rewrite'"
+    )[0]["relfilenode"]
+
+    conn.exec("INSERT INTO test_reloid_no_rewrite SELECT g, repeat('x', 100) FROM generate_series(1, 100) g")
+    conn.exec("CHECKPOINT")
+    sleep 3 # Wait for collection
+
+    result = conn.exec(<<~SQL)
+      SELECT DISTINCT relnumber
+      FROM smgr_stats.get_table_history(
+          (SELECT oid FROM pg_database WHERE datname = current_database()),
+          #{table_oid}::oid
+      )
+      WHERE forknum = 0
+    SQL
+
+    expect(result.ntuples).to eq(1)
+    expect(result[0]["relnumber"]).to eq(relfilenode)
+  end
+
+  it "get_table_history(db_oid, rel_oid) follows lineage through VACUUM FULL" do
+    conn.exec("CREATE TABLE test_reloid_rewrite (id int, data text)")
+    table_oid = conn.exec(
+      "SELECT oid FROM pg_class WHERE relname = 'test_reloid_rewrite'"
+    )[0]["oid"]
+
+    conn.exec("INSERT INTO test_reloid_rewrite SELECT g, repeat('x', 100) FROM generate_series(1, 100) g")
+    conn.exec("CHECKPOINT")
+
+    rfn1 = conn.exec("SELECT relfilenode FROM pg_class WHERE relname = 'test_reloid_rewrite'")[0]["relfilenode"]
+    sleep 3 # Collect stats for rfn1
+
+    conn.exec("VACUUM FULL test_reloid_rewrite")
+    rfn2 = conn.exec("SELECT relfilenode FROM pg_class WHERE relname = 'test_reloid_rewrite'")[0]["relfilenode"]
+    expect(rfn2).not_to eq(rfn1)
+
+    conn.exec("INSERT INTO test_reloid_rewrite VALUES (999, 'after rewrite')")
+    conn.exec("CHECKPOINT")
+    sleep 3 # Collect stats for rfn2
+
+    result = conn.exec(<<~SQL)
+      SELECT DISTINCT relnumber
+      FROM smgr_stats.get_table_history(
+          (SELECT oid FROM pg_database WHERE datname = current_database()),
+          #{table_oid}::oid
+      )
+      WHERE forknum = 0
+      ORDER BY relnumber
+    SQL
+
+    expect(result.ntuples).to eq(2)
+    expect(result.map { |r| r["relnumber"] }).to contain_exactly(rfn1, rfn2)
+  end
+
+  it "get_table_history(db_oid, rel_oid) follows lineage through multiple rewrites" do
+    conn.exec("CREATE TABLE test_reloid_multi (id int, data text)")
+    table_oid = conn.exec(
+      "SELECT oid FROM pg_class WHERE relname = 'test_reloid_multi'"
+    )[0]["oid"]
+
+    conn.exec("INSERT INTO test_reloid_multi VALUES (1, 'initial')")
+    conn.exec("CHECKPOINT")
+
+    rfn1 = conn.exec("SELECT relfilenode FROM pg_class WHERE relname = 'test_reloid_multi'")[0]["relfilenode"]
+    sleep 3
+
+    # First rewrite
+    conn.exec("TRUNCATE test_reloid_multi")
+    rfn2 = conn.exec("SELECT relfilenode FROM pg_class WHERE relname = 'test_reloid_multi'")[0]["relfilenode"]
+    expect(rfn2).not_to eq(rfn1)
+
+    conn.exec("INSERT INTO test_reloid_multi VALUES (2, 'after truncate')")
+    conn.exec("CHECKPOINT")
+    sleep 3
+
+    # Second rewrite
+    conn.exec("VACUUM FULL test_reloid_multi")
+    rfn3 = conn.exec("SELECT relfilenode FROM pg_class WHERE relname = 'test_reloid_multi'")[0]["relfilenode"]
+    expect(rfn3).not_to eq(rfn2)
+
+    conn.exec("INSERT INTO test_reloid_multi VALUES (3, 'after vacuum full')")
+    conn.exec("CHECKPOINT")
+    sleep 3
+
+    result = conn.exec(<<~SQL)
+      SELECT DISTINCT relnumber
+      FROM smgr_stats.get_table_history(
+          (SELECT oid FROM pg_database WHERE datname = current_database()),
+          #{table_oid}::oid
+      )
+      WHERE forknum = 0
+    SQL
+
     expect(result.ntuples).to eq(3)
     expect(result.map { |r| r["relnumber"] }).to contain_exactly(rfn1, rfn2, rfn3)
   end

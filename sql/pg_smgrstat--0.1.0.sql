@@ -198,22 +198,56 @@ SELECT
     h.last_access
 FROM smgr_stats.history h;
 
--- Get all history for a table, following relfilenode lineage through rewrites
-CREATE FUNCTION smgr_stats.get_table_history(rel regclass)
+CREATE FUNCTION smgr_stats.get_table_history(db_oid oid, rel_oid oid)
 RETURNS SETOF smgr_stats.history
 LANGUAGE sql STABLE
 AS $$
     WITH RECURSIVE lineage AS (
-        -- Start with current relfilenode
-        SELECT relfilenode AS relnumber FROM pg_class WHERE oid = rel
+        -- Start with all known relnumbers for this reloid in this database
+        SELECT DISTINCT relnumber
+        FROM smgr_stats.history
+        WHERE dboid = db_oid AND reloid = rel_oid
+        UNION
+        SELECT DISTINCT new_relnumber AS relnumber
+        FROM smgr_stats.relfile_history
+        WHERE dboid = db_oid AND reloid = rel_oid
         UNION ALL
         -- Follow the chain backwards through rewrites
         SELECT rh.old_relnumber
         FROM smgr_stats.relfile_history rh
         JOIN lineage l ON rh.new_relnumber = l.relnumber
+        WHERE rh.dboid = db_oid
     )
     SELECT h.*
     FROM smgr_stats.history h
     JOIN lineage l ON h.relnumber = l.relnumber
+    WHERE h.dboid = db_oid
+    ORDER BY h.collected_at;
+$$;
+
+CREATE FUNCTION smgr_stats.get_table_history(db_oid oid, schema_name name, table_name name)
+RETURNS SETOF smgr_stats.history
+LANGUAGE sql STABLE
+AS $$
+    WITH RECURSIVE lineage AS (
+        -- Start with all known relnumbers for this name in this database
+        SELECT DISTINCT relnumber
+        FROM smgr_stats.history
+        WHERE dboid = db_oid AND nspname = schema_name AND relname = table_name
+        UNION
+        SELECT DISTINCT new_relnumber AS relnumber
+        FROM smgr_stats.relfile_history
+        WHERE dboid = db_oid AND nspname = schema_name AND relname = table_name
+        UNION ALL
+        -- Follow the chain backwards through rewrites
+        SELECT rh.old_relnumber
+        FROM smgr_stats.relfile_history rh
+        JOIN lineage l ON rh.new_relnumber = l.relnumber
+        WHERE rh.dboid = db_oid
+    )
+    SELECT h.*
+    FROM smgr_stats.history h
+    JOIN lineage l ON h.relnumber = l.relnumber
+    WHERE h.dboid = db_oid
     ORDER BY h.collected_at;
 $$;
