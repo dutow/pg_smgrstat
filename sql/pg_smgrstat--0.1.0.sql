@@ -45,6 +45,8 @@ CREATE TABLE smgr_stats.history (
 CREATE INDEX ON smgr_stats.history USING BRIN (bucket_id);
 CREATE INDEX ON smgr_stats.history USING BRIN (collected_at);
 
+SELECT pg_catalog.pg_extension_config_dump('smgr_stats.history', '');
+
 CREATE FUNCTION smgr_stats.current(
     OUT bucket_id bigint,
     OUT collected_at timestamptz,
