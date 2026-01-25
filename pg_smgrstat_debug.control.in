@@ -1,0 +1,5 @@
+comment = 'Debug utilities for pg_smgrstat (injection points, buffer flush)'
+default_version = '@VERSION@'
+module_pathname = '$libdir/pg_smgrstat_debug'
+schema = smgr_stats_debug
+relocatable = false

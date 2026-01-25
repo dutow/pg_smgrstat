@@ -48,6 +48,28 @@ install_data(
   install_dir: pg_sharedir / 'extension',
 )
 
+# pg_smgrstat_debug extension (separate, independent module for debug functions)
+shared_module('pg_smgrstat_debug',
+  'src/pg_smgrstat_debug.c',
+  include_directories: [pg_includes, include_directories('src')],
+  name_prefix: '',
+  install: true,
+  install_dir: pg_pkglibdir,
+)
+
+configure_file(
+  input: 'pg_smgrstat_debug.control.in',
+  output: 'pg_smgrstat_debug.control',
+  configuration: {'VERSION': meson.project_version()},
+  install: true,
+  install_dir: pg_sharedir / 'extension',
+)
+
+install_data(
+  'sql/pg_smgrstat_debug--0.1.0.sql',
+  install_dir: pg_sharedir / 'extension',
+)
+
 clang_format = find_program('clang-format', required: false)
 if clang_format.found()
   run_target('format',

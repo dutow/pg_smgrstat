@@ -3,9 +3,6 @@
 #include "access/htup_details.h"
 #include "funcapi.h"
 #include "miscadmin.h"
-#include "storage/buf_internals.h"
-#include "storage/bufmgr.h"
-#include "utils/builtins.h"
 #include "utils/timestamp.h"
 
 #include "smgr_stats_store.h"
@@ -209,37 +206,4 @@ Datum smgr_stats_current(PG_FUNCTION_ARGS) {
   }
 
   SRF_RETURN_DONE(funcctx);
-}
-
-/*
- * smgr_stats_debug_flush_local_buffers - flush all dirty local buffers
- *
- * This function iterates through all local buffers (used by temporary tables)
- * and flushes any dirty buffers to disk. This is useful for testing since
- * local buffers are normally only written when evicted or at backend exit.
- *
- * Returns the number of buffers flushed.
- */
-PG_FUNCTION_INFO_V1(smgr_stats_debug_flush_local_buffers);
-
-Datum smgr_stats_debug_flush_local_buffers(PG_FUNCTION_ARGS) {
-  (void)fcinfo; /* unused */
-  int flushed = 0;
-
-  for (int i = 0; i < NLocBuffer; i++) {
-    BufferDesc* buf_hdr = GetLocalBufferDescriptor(i);
-    uint64 buf_state = pg_atomic_read_u64(&buf_hdr->state);
-
-    /* Only flush valid, dirty, unpinned buffers */
-    if ((buf_state & BM_TAG_VALID) && (buf_state & BM_DIRTY) && BUF_STATE_GET_REFCOUNT(buf_state) == 0) {
-      PinLocalBuffer(buf_hdr, false);
-      FlushLocalBuffer(buf_hdr, NULL);
-      Buffer buf = BufferDescriptorGetBuffer(buf_hdr);
-      UnpinLocalBuffer(buf);
-
-      flushed++;
-    }
-  }
-
-  PG_RETURN_INT32(flushed);
 }

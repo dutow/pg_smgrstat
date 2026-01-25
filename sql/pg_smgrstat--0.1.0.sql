@@ -217,29 +217,3 @@ AS $$
     JOIN lineage l ON h.relnumber = l.relnumber
     ORDER BY h.collected_at;
 $$;
-
--- Debug functions for injecting artificial I/O delays.
--- Require PostgreSQL built with --enable-injection-points; otherwise they
--- return an error when called.
-CREATE FUNCTION smgr_stats._debug_set_read_delay(delay_us bigint)
-RETURNS void LANGUAGE c VOLATILE
-AS 'MODULE_PATHNAME', 'smgr_stats_debug_set_read_delay';
-
-CREATE FUNCTION smgr_stats._debug_clear_read_delay()
-RETURNS void LANGUAGE c VOLATILE
-AS 'MODULE_PATHNAME', 'smgr_stats_debug_clear_read_delay';
-
-CREATE FUNCTION smgr_stats._debug_set_write_delay(delay_us bigint)
-RETURNS void LANGUAGE c VOLATILE
-AS 'MODULE_PATHNAME', 'smgr_stats_debug_set_write_delay';
-
-CREATE FUNCTION smgr_stats._debug_clear_write_delay()
-RETURNS void LANGUAGE c VOLATILE
-AS 'MODULE_PATHNAME', 'smgr_stats_debug_clear_write_delay';
-
--- Flush all dirty local buffers (used by temporary tables) to disk.
--- This is useful for testing since local buffers are normally only written
--- when evicted or at backend exit. Returns the number of buffers flushed.
-CREATE FUNCTION smgr_stats._debug_flush_local_buffers()
-RETURNS integer LANGUAGE c VOLATILE
-AS 'MODULE_PATHNAME', 'smgr_stats_debug_flush_local_buffers';

@@ -140,8 +140,12 @@ RSpec.describe "pg_smgrstat write bucket precision" do
   WRITE_DELAY_US = 10_000
   WRITE_EXPECTED_BIN = 14  # 0-indexed
 
+  before(:all) do
+    @pg.connect { |c| c.exec("CREATE EXTENSION IF NOT EXISTS pg_smgrstat_debug") }
+  end
+
   after do
-    conn.exec("SELECT smgr_stats._debug_clear_write_delay()")
+    conn.exec("SELECT smgr_stats_debug.clear_write_delay()")
   end
 
   it "places writes into the expected histogram bin" do
@@ -156,7 +160,7 @@ RSpec.describe "pg_smgrstat write bucket precision" do
       bins.each_with_index { |v, i| baseline_bins[i] += v }
     end
 
-    conn.exec("SELECT smgr_stats._debug_set_write_delay(#{WRITE_DELAY_US})")
+    conn.exec("SELECT smgr_stats_debug.set_write_delay(#{WRITE_DELAY_US})")
 
     conn.exec("CREATE TABLE test_write_bucket (id int, data text)")
     conn.exec("INSERT INTO test_write_bucket SELECT g, repeat('x', 200) FROM generate_series(1, 50) g")
@@ -188,7 +192,7 @@ RSpec.describe "pg_smgrstat write bucket precision" do
   end
 
   it "min_us and max_us reflect the injected delay" do
-    conn.exec("SELECT smgr_stats._debug_set_write_delay(#{WRITE_DELAY_US})")
+    conn.exec("SELECT smgr_stats_debug.set_write_delay(#{WRITE_DELAY_US})")
 
     conn.exec("CREATE TABLE test_write_minmax (id int)")
     conn.exec("INSERT INTO test_write_minmax SELECT g FROM generate_series(1, 10) g")
@@ -209,7 +213,7 @@ RSpec.describe "pg_smgrstat write bucket precision" do
   end
 
   it "hist_percentile returns expected bin lower bound for delayed writes" do
-    conn.exec("SELECT smgr_stats._debug_set_write_delay(#{WRITE_DELAY_US})")
+    conn.exec("SELECT smgr_stats_debug.set_write_delay(#{WRITE_DELAY_US})")
 
     conn.exec("CREATE TABLE test_pct_bucket (id int, data text)")
     conn.exec("INSERT INTO test_pct_bucket SELECT g, repeat('x', 200) FROM generate_series(1, 50) g")
@@ -237,6 +241,7 @@ RSpec.describe "pg_smgrstat read bucket precision" do
 
   before(:all) do
     @pg.connect do |c|
+      c.exec("CREATE EXTENSION IF NOT EXISTS pg_smgrstat_debug")
       c.exec("CREATE EXTENSION IF NOT EXISTS pg_buffercache")
       c.exec("CREATE TABLE test_read_bucket (id int, data text)")
       c.exec("INSERT INTO test_read_bucket SELECT g, repeat('x', 200) FROM generate_series(1, 50) g")
@@ -245,7 +250,7 @@ RSpec.describe "pg_smgrstat read bucket precision" do
   end
 
   after do
-    conn.exec("SELECT smgr_stats._debug_clear_read_delay()")
+    conn.exec("SELECT smgr_stats_debug.clear_read_delay()")
   end
 
   it "places reads into the expected histogram bin" do
@@ -260,7 +265,7 @@ RSpec.describe "pg_smgrstat read bucket precision" do
       bins.each_with_index { |v, i| baseline_bins[i] += v }
     end
 
-    conn.exec("SELECT smgr_stats._debug_set_read_delay(#{READ_DELAY_US})")
+    conn.exec("SELECT smgr_stats_debug.set_read_delay(#{READ_DELAY_US})")
     conn.exec("SELECT pg_buffercache_evict_all()")
     conn.exec("SELECT count(*) FROM test_read_bucket")
 
@@ -290,7 +295,7 @@ RSpec.describe "pg_smgrstat read bucket precision" do
   end
 
   it "min_us and max_us reflect the injected delay" do
-    conn.exec("SELECT smgr_stats._debug_set_read_delay(#{READ_DELAY_US})")
+    conn.exec("SELECT smgr_stats_debug.set_read_delay(#{READ_DELAY_US})")
     conn.exec("SELECT pg_buffercache_evict_all()")
     conn.exec("SELECT count(*) FROM test_read_bucket")
 
