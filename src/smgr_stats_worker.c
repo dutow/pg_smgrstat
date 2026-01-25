@@ -83,8 +83,7 @@ static void smgr_stats_collect_and_insert(void) {
    */
   for (int i = 0; i < count; i++) {
     SmgrStatsEntry* e = &snapshot[i];
-    if (!e->meta.metadata_valid &&
-        (e->key.locator.dbOid == MyDatabaseId || e->key.locator.dbOid == 0)) {
+    if (!e->meta.metadata_valid && (e->key.locator.dbOid == MyDatabaseId || e->key.locator.dbOid == 0)) {
       smgr_stats_resolve_metadata(e, &e->key);
     }
   }

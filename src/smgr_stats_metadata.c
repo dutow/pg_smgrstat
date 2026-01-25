@@ -11,21 +11,21 @@
 #include "smgr_stats_store.h"
 
 /* Backend-local list of keys needing metadata resolution */
-static List *pending_metadata_keys = NIL;
+static List* pending_metadata_keys = NIL;
 
 /* Previous hook values for chaining */
 static ExecutorEnd_hook_type prev_executor_end_hook = NULL;
 static ProcessUtility_hook_type prev_process_utility_hook = NULL;
 static bool hooks_registered = false;
 
-void smgr_stats_add_pending_metadata(const SmgrStatsKey *key) {
+void smgr_stats_add_pending_metadata(const SmgrStatsKey* key) {
   /* Only track entries for our database (or global entries) */
   if (key->locator.dbOid != MyDatabaseId && key->locator.dbOid != 0) {
     return;
   }
 
   MemoryContext old_ctx = MemoryContextSwitchTo(TopMemoryContext);
-  SmgrStatsKey *key_copy = palloc(sizeof(SmgrStatsKey));
+  SmgrStatsKey* key_copy = palloc(sizeof(SmgrStatsKey));
   *key_copy = *key;
   pending_metadata_keys = lappend(pending_metadata_keys, key_copy);
   MemoryContextSwitchTo(old_ctx);
@@ -43,14 +43,14 @@ void smgr_stats_resolve_pending_metadata(void) {
    * 3. Do syscache lookup (no lock held - I/O is safe)
    * 4. If lookup succeeded, re-acquire lock and set metadata if still needed
    */
-  ListCell *lc;
+  ListCell* lc;
   foreach (lc, pending_metadata_keys) {
-    SmgrStatsKey *key = lfirst(lc);
+    SmgrStatsKey* key = lfirst(lc);
 
     /* Resolve entries for our database and global/shared catalogs (dbOid=0) */
     if (key->locator.dbOid == MyDatabaseId || key->locator.dbOid == 0) {
       /* Step 1: Check if resolution is needed (holding lock) */
-      SmgrStatsEntry *stats = smgr_stats_find_entry(key);
+      SmgrStatsEntry* stats = smgr_stats_find_entry(key);
       if (stats != NULL && !stats->meta.metadata_valid) {
         /* Step 2: Release lock before syscache access */
         smgr_stats_release_entry(stats);
@@ -82,7 +82,7 @@ void smgr_stats_resolve_pending_metadata(void) {
 }
 
 /* ExecutorEnd hook - called after DML queries complete */
-static void smgr_stats_executor_end(QueryDesc *query_desc) {
+static void smgr_stats_executor_end(QueryDesc* query_desc) {
   if (prev_executor_end_hook) {
     prev_executor_end_hook(query_desc);
   } else {
@@ -94,9 +94,9 @@ static void smgr_stats_executor_end(QueryDesc *query_desc) {
 }
 
 /* ProcessUtility hook - called after DDL/utility statements complete */
-static void smgr_stats_process_utility(PlannedStmt *pstmt, const char *query_string, bool read_only_tree,
-                                       ProcessUtilityContext context, ParamListInfo params,
-                                       QueryEnvironment *query_env, DestReceiver *dest, QueryCompletion *qc) {
+static void smgr_stats_process_utility(PlannedStmt* pstmt, const char* query_string, bool read_only_tree,
+                                       ProcessUtilityContext context, ParamListInfo params, QueryEnvironment* query_env,
+                                       DestReceiver* dest, QueryCompletion* qc) {
   PG_TRY();
   {
     if (prev_process_utility_hook) {

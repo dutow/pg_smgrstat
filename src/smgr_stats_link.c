@@ -7,10 +7,31 @@
 #include "utils/injection_point.h"
 #include "utils/memutils.h"
 
+#include "smgr_stats_guc.h"
 #include "smgr_stats_link.h"
 #include "smgr_stats_metadata.h"
 #include "smgr_stats_seq.h"
 #include "smgr_stats_store.h"
+
+/*
+ * Determine the tracking key for an I/O operation, handling temp table modes.
+ * Returns false if this operation should not be tracked (temp table with mode=off).
+ */
+static inline bool smgr_stats_determine_key(SMgrRelation reln, ForkNumber forknum, SmgrStatsKey* key_out) {
+  if (SmgrIsTemp(reln)) {
+    switch ((SmgrStatsTempTracking)smgr_stats_track_temp_tables) {
+      case SMGR_STATS_TEMP_OFF:
+        return false;
+      case SMGR_STATS_TEMP_INDIVIDUAL:
+        break; /* Use real key below */
+      case SMGR_STATS_TEMP_AGGREGATE:
+        *key_out = smgr_stats_temp_aggregate_key(reln->smgr_rlocator.locator.dbOid);
+        return true;
+    }
+  }
+  *key_out = (SmgrStatsKey){.locator = reln->smgr_rlocator.locator, .forknum = forknum};
+  return true;
+}
 
 static inline void smgr_stats_update_activity(SmgrStatsEntry* entry, TimestampTz now) {
   if (entry->first_access == 0) {
@@ -38,6 +59,8 @@ static PgAioHandleCallbackID smgr_stats_aio_cb_id = PGAIO_HCB_INVALID;
 typedef struct SmgrStatsAioSlot {
   instr_time start_time;
   SmgrStatsSeqResult seq_result;
+  SmgrStatsKey tracking_key;
+  bool should_track;
 } SmgrStatsAioSlot;
 
 static SmgrStatsAioSlot* aio_slots = NULL;
@@ -59,12 +82,17 @@ static PgAioResult smgr_stats_readv_complete(PgAioHandle* ioh, PgAioResult prior
     return prior_result;
   }
 
-  PgAioTargetData* td = pgaio_io_get_target_data(ioh);
   int slot = pgaio_io_get_id(ioh) % io_max_concurrency;
+
+  /* Skip if we decided not to track this at startreadv time */
+  if (!aio_slots[slot].should_track) {
+    return prior_result;
+  }
+
+  PgAioTargetData* td = pgaio_io_get_target_data(ioh);
   SmgrStatsSeqResult seq = aio_slots[slot].seq_result;
 
-  SmgrStatsKey key = {.locator = td->smgr.rlocator, .forknum = td->smgr.forkNum};
-  SmgrStatsEntry* entry = smgr_stats_find_entry(&key);
+  SmgrStatsEntry* entry = smgr_stats_find_entry(&aio_slots[slot].tracking_key);
   if (entry) {
     entry->reads++;
     entry->read_blocks += td->smgr.nblocks;
@@ -94,8 +122,6 @@ static PgAioResult smgr_stats_readv_complete(PgAioHandle* ioh, PgAioResult prior
      * which conflicts with AIO constraints. Metadata is resolved by the
      * background worker when collecting stats.
      */
-  } else {
-    /* Entry not found - nothing to update */
   }
 
   return prior_result;
@@ -115,18 +141,24 @@ static void smgr_stats_readv(SMgrRelation reln, ForkNumber forknum, BlockNumber 
   in_smgr_stats_io = false;
   INJECTION_POINT("smgr-stats-after-readv", NULL);
 
+  SmgrStatsKey tracking_key;
+  if (!smgr_stats_determine_key(reln, forknum, &tracking_key)) {
+    return; /* Temp table with tracking=off */
+  }
+
   instr_time end;
   INSTR_TIME_SET_CURRENT(end);
   INSTR_TIME_SUBTRACT(end, start);
   uint64 elapsed_us = INSTR_TIME_GET_MICROSEC(end);
 
-  SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
-  SmgrStatsSeqResult seq = smgr_stats_check_sequential(&key, blocknum, nblocks, true);
+  /* Use real key for sequential detection (preserves accuracy even in aggregate mode) */
+  SmgrStatsKey real_key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
+  SmgrStatsSeqResult seq = smgr_stats_check_sequential(&real_key, blocknum, nblocks, true);
 
   bool found;
-  SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
-  if (!found) {
-    smgr_stats_add_pending_metadata(&key);
+  SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
+  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+    smgr_stats_add_pending_metadata(&tracking_key);
   }
   entry->reads++;
   entry->read_blocks += nblocks;
@@ -143,39 +175,41 @@ static void smgr_stats_readv(SMgrRelation reln, ForkNumber forknum, BlockNumber 
   smgr_stats_record_burstiness(&entry->read_burst, now);
   smgr_stats_update_activity(entry, now);
   smgr_stats_release_entry(entry);
-
-  /*
-   * No metadata resolution here - may conflict with AIO or buffer operations.
-   * Metadata is resolved by the background worker when collecting stats.
-   */
 }
 
 static void smgr_stats_startreadv(PgAioHandle* ioh, SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
                                   void** buffers, BlockNumber nblocks, SmgrChainIndex chain_index) {
-  /* Ensure entry exists before I/O (so completion callback can find it without allocating) */
-  SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
-  bool found;
-  SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
-  if (!found) {
-    smgr_stats_add_pending_metadata(&key);
-  }
-  smgr_stats_release_entry(entry);
-
-  /*
-   * No metadata resolution here - accessing syscache triggers catalog I/O which
-   * conflicts with AIO's "one IO at a time" requirement. Metadata is resolved
-   * via ExecutorEnd/ProcessUtility hooks after operations complete.
-   */
-
   /* Lazily allocate per-slot state array */
   if (!aio_slots) {
     aio_slots = MemoryContextAllocZero(TopMemoryContext, io_max_concurrency * sizeof(SmgrStatsAioSlot));
   }
 
   int slot = pgaio_io_get_id(ioh) % io_max_concurrency;
+
+  SmgrStatsKey tracking_key;
+  bool should_track = smgr_stats_determine_key(reln, forknum, &tracking_key);
+
+  aio_slots[slot].should_track = should_track;
+  if (!should_track) {
+    smgr_startreadv_next(ioh, reln, forknum, blocknum, buffers, nblocks, chain_index + 1);
+    return;
+  }
+
+  aio_slots[slot].tracking_key = tracking_key;
+
+  /* Ensure entry exists before I/O (so completion callback can find it without allocating) */
+  bool found;
+  SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
+  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+    smgr_stats_add_pending_metadata(&tracking_key);
+  }
+  smgr_stats_release_entry(entry);
+
   INSTR_TIME_SET_CURRENT(aio_slots[slot].start_time);
-  /* Sequential detection here (safe: not in critical section) */
-  aio_slots[slot].seq_result = smgr_stats_check_sequential(&key, blocknum, nblocks, true);
+
+  /* Use real key for sequential detection (preserves accuracy even in aggregate mode) */
+  SmgrStatsKey real_key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
+  aio_slots[slot].seq_result = smgr_stats_check_sequential(&real_key, blocknum, nblocks, true);
 
   pgaio_io_register_callbacks(ioh, smgr_stats_aio_cb_id, 0);
   smgr_startreadv_next(ioh, reln, forknum, blocknum, buffers, nblocks, chain_index + 1);
@@ -191,18 +225,24 @@ static void smgr_stats_writev(SMgrRelation reln, ForkNumber forknum, BlockNumber
   in_smgr_stats_io = false;
   INJECTION_POINT("smgr-stats-after-writev", NULL);
 
+  SmgrStatsKey tracking_key;
+  if (!smgr_stats_determine_key(reln, forknum, &tracking_key)) {
+    return; /* Temp table with tracking=off */
+  }
+
   instr_time end;
   INSTR_TIME_SET_CURRENT(end);
   INSTR_TIME_SUBTRACT(end, start);
   uint64 elapsed_us = INSTR_TIME_GET_MICROSEC(end);
 
-  SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
-  SmgrStatsSeqResult seq = smgr_stats_check_sequential(&key, blocknum, nblocks, false);
+  /* Use real key for sequential detection (preserves accuracy even in aggregate mode) */
+  SmgrStatsKey real_key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
+  SmgrStatsSeqResult seq = smgr_stats_check_sequential(&real_key, blocknum, nblocks, false);
 
   bool found;
-  SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
-  if (!found) {
-    smgr_stats_add_pending_metadata(&key);
+  SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
+  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+    smgr_stats_add_pending_metadata(&tracking_key);
   }
   entry->writes++;
   entry->write_blocks += nblocks;
@@ -225,11 +265,15 @@ static void smgr_stats_extend(SMgrRelation reln, ForkNumber forknum, BlockNumber
                               bool skip_fsync, SmgrChainIndex chain_index) {
   smgr_extend_next(reln, forknum, blocknum, buffer, skip_fsync, chain_index + 1);
 
-  SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
+  SmgrStatsKey tracking_key;
+  if (!smgr_stats_determine_key(reln, forknum, &tracking_key)) {
+    return;
+  }
+
   bool found;
-  SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
-  if (!found) {
-    smgr_stats_add_pending_metadata(&key);
+  SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
+  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+    smgr_stats_add_pending_metadata(&tracking_key);
   }
   entry->extends++;
   entry->extend_blocks++;
@@ -241,11 +285,15 @@ static void smgr_stats_zeroextend(SMgrRelation reln, ForkNumber forknum, BlockNu
                                   bool skip_fsync, SmgrChainIndex chain_index) {
   smgr_zeroextend_next(reln, forknum, blocknum, nblocks, skip_fsync, chain_index + 1);
 
-  SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
+  SmgrStatsKey tracking_key;
+  if (!smgr_stats_determine_key(reln, forknum, &tracking_key)) {
+    return;
+  }
+
   bool found;
-  SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
-  if (!found) {
-    smgr_stats_add_pending_metadata(&key);
+  SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
+  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+    smgr_stats_add_pending_metadata(&tracking_key);
   }
   entry->extends++;
   entry->extend_blocks += nblocks;
@@ -257,11 +305,15 @@ static void smgr_stats_truncate(SMgrRelation reln, ForkNumber forknum, BlockNumb
                                 SmgrChainIndex chain_index) {
   smgr_truncate_next(reln, forknum, old_nblocks, nblocks, chain_index + 1);
 
-  SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
+  SmgrStatsKey tracking_key;
+  if (!smgr_stats_determine_key(reln, forknum, &tracking_key)) {
+    return;
+  }
+
   bool found;
-  SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
-  if (!found) {
-    smgr_stats_add_pending_metadata(&key);
+  SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
+  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+    smgr_stats_add_pending_metadata(&tracking_key);
   }
   entry->truncates++;
   smgr_stats_update_activity(entry, GetCurrentTimestamp());
@@ -271,11 +323,15 @@ static void smgr_stats_truncate(SMgrRelation reln, ForkNumber forknum, BlockNumb
 static void smgr_stats_immedsync(SMgrRelation reln, ForkNumber forknum, SmgrChainIndex chain_index) {
   smgr_immedsync_next(reln, forknum, chain_index + 1);
 
-  SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
+  SmgrStatsKey tracking_key;
+  if (!smgr_stats_determine_key(reln, forknum, &tracking_key)) {
+    return;
+  }
+
   bool found;
-  SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
-  if (!found) {
-    smgr_stats_add_pending_metadata(&key);
+  SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
+  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+    smgr_stats_add_pending_metadata(&tracking_key);
   }
   entry->fsyncs++;
   smgr_stats_update_activity(entry, GetCurrentTimestamp());
@@ -285,12 +341,15 @@ static void smgr_stats_immedsync(SMgrRelation reln, ForkNumber forknum, SmgrChai
 static void smgr_stats_open(SMgrRelation reln, SmgrChainIndex chain_index) {
   smgr_open_next(reln, chain_index + 1);
 
-  /* Create entry for main fork. Metadata resolution happens via ExecutorEnd/ProcessUtility hooks. */
-  SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = MAIN_FORKNUM};
+  SmgrStatsKey tracking_key;
+  if (!smgr_stats_determine_key(reln, MAIN_FORKNUM, &tracking_key)) {
+    return;
+  }
+
   bool found;
-  SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
-  if (!found) {
-    smgr_stats_add_pending_metadata(&key);
+  SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
+  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+    smgr_stats_add_pending_metadata(&tracking_key);
   }
   smgr_stats_release_entry(entry);
 }
@@ -302,17 +361,21 @@ static void smgr_stats_create(RelFileLocator relold, SMgrRelation reln, ForkNumb
   /*
    * Track relfilenode associations for table rewrites (VACUUM FULL, CLUSTER,
    * TRUNCATE, REINDEX, ALTER TABLE SET TABLESPACE, etc.).
+   * Skip for temp tables - they don't need relfile history tracking.
    */
-  if (relold.relNumber != 0 && relold.relNumber != reln->smgr_rlocator.locator.relNumber) {
+  if (!SmgrIsTemp(reln) && relold.relNumber != 0 && relold.relNumber != reln->smgr_rlocator.locator.relNumber) {
     smgr_stats_queue_relfile_assoc(&relold, &reln->smgr_rlocator.locator, forknum, is_redo);
   }
 
-  /* Create entry - metadata resolution happens via ExecutorEnd/ProcessUtility hooks */
-  SmgrStatsKey key = {.locator = reln->smgr_rlocator.locator, .forknum = forknum};
+  SmgrStatsKey tracking_key;
+  if (!smgr_stats_determine_key(reln, forknum, &tracking_key)) {
+    return;
+  }
+
   bool found;
-  SmgrStatsEntry* entry = smgr_stats_get_entry(&key, &found);
-  if (!found) {
-    smgr_stats_add_pending_metadata(&key);
+  SmgrStatsEntry* entry = smgr_stats_get_entry(&tracking_key, &found);
+  if (!found && !smgr_stats_is_temp_aggregate_key(&tracking_key)) {
+    smgr_stats_add_pending_metadata(&tracking_key);
   }
   smgr_stats_release_entry(entry);
 }

@@ -4,12 +4,13 @@
 #include "access/htup_details.h"
 #include "access/table.h"
 #include "access/xact.h"
-#include "miscadmin.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_namespace.h"
+#include "catalog/pg_tablespace_d.h"
 #include "lib/dshash.h"
+#include "miscadmin.h"
 #include "port/atomics.h"
 #include "storage/dsm_registry.h"
 #include "utils/builtins.h"
@@ -169,6 +170,49 @@ SmgrStatsEntry* smgr_stats_snapshot_and_reset(int* count, int64* bucket_id) {
 }
 
 /*
+ * Direct pg_class scan by (reltablespace, relfilenode) using the index.
+ * This works for temp tables (which RelidByRelfilenumber skips) because
+ * we're in the same backend and PostgreSQL's visibility rules show us
+ * only our own temp tables.
+ */
+static Oid lookup_relid_by_relfilenode_direct(Oid spc_oid, RelFileNumber rel_number) {
+  Oid result = InvalidOid;
+  ScanKeyData skey[2];
+  SysScanDesc scan;
+  HeapTuple tup;
+  Relation class_rel;
+
+  /*
+   * pg_class stores reltablespace=0 for the database's default tablespace.
+   * Convert actual tablespace OIDs to 0 for the lookup.
+   */
+  Oid lookup_spc = spc_oid;
+  if (lookup_spc == MyDatabaseTableSpace) {
+    lookup_spc = InvalidOid;
+  }
+  /* Also handle DEFAULTTABLESPACE_OID (pg_default = 1663) */
+  if (lookup_spc == DEFAULTTABLESPACE_OID) {
+    lookup_spc = InvalidOid;
+  }
+
+  ScanKeyInit(&skey[0], Anum_pg_class_reltablespace, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(lookup_spc));
+  ScanKeyInit(&skey[1], Anum_pg_class_relfilenode, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(rel_number));
+
+  class_rel = table_open(RelationRelationId, AccessShareLock);
+  scan = systable_beginscan(class_rel, ClassTblspcRelfilenodeIndexId, true, NULL, 2, skey);
+
+  tup = systable_getnext(scan);
+  if (HeapTupleIsValid(tup)) {
+    result = ((Form_pg_class)GETSTRUCT(tup))->oid;
+  }
+
+  systable_endscan(scan);
+  table_close(class_rel, AccessShareLock);
+
+  return result;
+}
+
+/*
  * Lookup metadata from pg_class without modifying any entry. Returns metadata
  * in the output parameter. Safe to call without holding any locks since it only
  * reads from syscache (which may trigger I/O, but that's fine without locks).
@@ -184,6 +228,16 @@ bool smgr_stats_lookup_metadata(const SmgrStatsKey* key, SmgrStatsEntryMeta* met
   meta_out->reloid = InvalidOid;
   meta_out->main_reloid = InvalidOid;
   meta_out->metadata_valid = false;
+
+  /* Handle synthetic aggregate key for temp tables */
+  if (smgr_stats_is_temp_aggregate_key(key)) {
+    meta_out->reloid = InvalidOid;
+    meta_out->relkind = 'T'; /* Custom marker for temp aggregate */
+    namestrcpy(&meta_out->relname, "<temporary tables>");
+    namestrcpy(&meta_out->nspname, "pg_temp");
+    meta_out->metadata_valid = true;
+    return true;
+  }
 
   /*
    * Skip if relNumber is 0 (defensive check). In practice, actual I/O uses
@@ -211,10 +265,25 @@ bool smgr_stats_lookup_metadata(const SmgrStatsKey* key, SmgrStatsEntryMeta* met
   }
 
   /*
-   * RelidByRelfilenumber scans pg_class for relfilenode match.
-   * Returns InvalidOid if not found.
+   * First try RelidByRelfilenumber for permanent relations.
+   * This uses a cache and is faster for repeated lookups.
+   * Note: RelidByRelfilenumber explicitly doesn't work for temp tables.
    */
   reloid = RelidByRelfilenumber(key->locator.spcOid, key->locator.relNumber);
+  if (!OidIsValid(reloid) && key->locator.spcOid != InvalidOid) {
+    /* Fallback: try with InvalidOid (stored as 0 in pg_class for default tablespace) */
+    reloid = RelidByRelfilenumber(InvalidOid, key->locator.relNumber);
+  }
+
+  /*
+   * If RelidByRelfilenumber failed, try direct pg_class scan.
+   * This works for temp tables since we're in the same backend and
+   * can see our own temp tables via normal visibility rules.
+   */
+  if (!OidIsValid(reloid)) {
+    reloid = lookup_relid_by_relfilenode_direct(key->locator.spcOid, key->locator.relNumber);
+  }
+
   if (!OidIsValid(reloid)) {
     return false;
   }

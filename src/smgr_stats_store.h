@@ -34,6 +34,20 @@ typedef struct SmgrStatsKey {
   ForkNumber forknum;
 } SmgrStatsKey;
 
+/* Synthetic key for temp table aggregate: spcOid=0, relNumber=0 can't conflict with real tables */
+#define SMGR_STATS_TEMP_AGG_SPCOID 0
+#define SMGR_STATS_TEMP_AGG_RELNUMBER 0
+
+static inline SmgrStatsKey smgr_stats_temp_aggregate_key(Oid db_oid) {
+  return (SmgrStatsKey){
+      .locator = {.spcOid = SMGR_STATS_TEMP_AGG_SPCOID, .dbOid = db_oid, .relNumber = SMGR_STATS_TEMP_AGG_RELNUMBER},
+      .forknum = MAIN_FORKNUM};
+}
+
+static inline bool smgr_stats_is_temp_aggregate_key(const SmgrStatsKey* key) {
+  return (key->locator.spcOid == SMGR_STATS_TEMP_AGG_SPCOID && key->locator.relNumber == SMGR_STATS_TEMP_AGG_RELNUMBER);
+}
+
 typedef struct SmgrStatsEntry {
   SmgrStatsKey key; /* Must be first (dshash requirement) */
 

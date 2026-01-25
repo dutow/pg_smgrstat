@@ -22,7 +22,7 @@
 
 /* Add a key to the backend-local pending metadata list. Called from SMGR hooks
  * when a new entry is created. The key is copied to TopMemoryContext. */
-extern void smgr_stats_add_pending_metadata(const SmgrStatsKey *key);
+extern void smgr_stats_add_pending_metadata(const SmgrStatsKey* key);
 
 /* Resolve all pending metadata entries for this backend's database.
  * Safe to call from hooks after operations complete. Uses the
