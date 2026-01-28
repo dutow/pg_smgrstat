@@ -1,16 +1,20 @@
 # pg_smgrstat
 
-A PostgreSQL extension that collects per-file I/O statistics at the storage manager (SMGR) level. It intercepts all low-level I/O operations and records detailed metrics including operation counts, timing distributions, access patterns, and burstiness—providing visibility that core PostgreSQL statistics don't offer.
+A PostgreSQL extension that collects **per-file** I/O statistics at the storage manager (SMGR) level. It intercepts all low-level I/O operations and records detailed metrics including operation counts, timing distributions, access patterns, and burstiness—providing visibility that core PostgreSQL statistics don't offer.
 
 **Primary use cases:**
-- **Storage tiering decisions**: Identify cold files suitable for offloading to cheaper storage (e.g., S3)
+- **Storage tiering decisions**: Identify cold files suitable for automatic offloading to cheaper storage (e.g., S3), using another extension based on these statistics
+- **Debug I/O questions in more details**: For example, answering questions like "There was a spike, which file/table caused it?"
 - **I/O performance analysis**: Understand latency distributions with percentile-ready histograms
-- **Workload characterization**: Distinguish sequential scans from random access patterns
+- **Workload characterization**: Distinguish sequential scans from random access patterns, regular periodic timings from completely random bursts.
 - **Capacity planning**: Track per-table I/O trends over time
 
 The extension stores historical data in a regular table, enabling time-series analysis via standard SQL.
 
 ## Collected Statistics
+
+All metrics are linked to table metadata (`reloid`, `relname`, `nspname`, `relkind`, `relfile`), as they were at the time of the collection period.
+Table metadata changes (e.g. filename changes caused by rewriting operations such as VACUUM FULL or TRUNCATE) are also collected in a separate table for easy reconstruction.
 
 | Metric | Description |
 |--------|-------------|
@@ -30,8 +34,6 @@ The extension stores historical data in a regular table, enabling time-series an
 | `write_run_mean`, `write_run_cov` | Sequential write run length distribution |
 | `active_seconds` | Distinct seconds with any activity (duty cycle tracking) |
 | `first_access`, `last_access` | Timestamps of first and most recent access |
-
-Additionally, relation metadata (`reloid`, `relname`, `nspname`, `relkind`) is captured at entry creation, enabling queries by table name even after `VACUUM FULL` changes the underlying file.
 
 ## Architecture
 
